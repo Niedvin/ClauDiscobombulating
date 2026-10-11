@@ -7,8 +7,20 @@ MARKET="ClauDiscobombulating"
 PLUGIN="ClauDiscobombulating@$MARKET"
 CONFIG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS="$CONFIG/settings.json"
+OC_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
+OC_DIR="$OC_BASE/opencode/plugins/claudiscobombulating"
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found in PATH" >&2; exit 1; }
+
+install_opencode() {
+  mkdir -p "$OC_DIR"
+  for pair in tui.tsx:opencode/tui.tsx plugin.json:plugin/.claude-plugin/plugin.json; do
+    local name="${pair%%:*}" src="${pair#*:}"
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$src" -o "$OC_DIR/$name.tmp"
+    [ -s "$OC_DIR/$name.tmp" ] || { echo "$name is empty" >&2; exit 1; }
+    mv -f "$OC_DIR/$name.tmp" "$OC_DIR/$name"
+  done
+}
 
 set_autoupdate() {
   local on="$1"
@@ -78,12 +90,24 @@ done
 
 if [ "${1:-}" = "--uninstall" ]; then
   set_autoupdate 0
+  rm -rf "$OC_DIR"
   echo "ClauDiscobombulating removed."
   exit 0
+fi
+
+with_opencode=0
+if command -v opencode >/dev/null 2>&1 || [ -d "$OC_BASE/opencode" ]; then
+  printf 'opencode found. Install the opencode plugin too? [Y/n] '
+  # piped through curl stdin is the script itself, so ask the terminal — 2026-10-11
+  { read -r answer </dev/tty; } 2>/dev/null || answer=""
+  case "$answer" in [nN]*) ;; *) with_opencode=1 ;; esac
 fi
 
 claude plugin marketplace add "$REPO"
 claude plugin install "$PLUGIN" --scope user
 set_autoupdate 1
+[ "$with_opencode" = 1 ] && install_opencode
 echo "ClauDiscobombulating installed. Restart Claude Code and the desktop app."
+[ "$with_opencode" = 1 ] && echo "opencode plugin in $OC_DIR. Restart opencode."
+exit 0
 

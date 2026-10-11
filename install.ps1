@@ -7,6 +7,7 @@
   Restart Claude Code / the desktop app afterwards.
   -Repo owner/name installs from a GitHub copy of this folder instead of the local one
   and turns on marketplace auto-update in settings.json (the old file is kept in .backups).
+  With opencode present it asks to add the opencode sidebar plugin too.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param([switch]$Uninstall, [string]$Repo)
@@ -60,6 +61,22 @@ function Set-AutoUpdate([bool]$On, [string]$Source) {
   Move-Item $tmp $Settings -Force
 }
 
+$OcBase = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
+$OcDir = Join-Path $OcBase 'opencode/plugins/claudiscobombulating'
+$hasOpenCode = [bool](Get-Command opencode -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $OcBase 'opencode'))
+
+function Install-OpenCode {
+  if (-not $PSCmdlet.ShouldProcess($OcDir, 'install opencode plugin')) { return }
+  New-Item -ItemType Directory -Force $OcDir | Out-Null
+  foreach ($f in @(@('tui.tsx', 'opencode/tui.tsx'), @('plugin.json', 'plugin/.claude-plugin/plugin.json'))) {
+    $tmp = Join-Path $OcDir "$($f[0]).tmp"
+    if ($Repo) { Invoke-WebRequest "https://raw.githubusercontent.com/$Repo/main/$($f[1])" -OutFile $tmp -UseBasicParsing }
+    else { Copy-Item (Join-Path $Root $f[1]) $tmp }
+    if ((Get-Item $tmp).Length -eq 0) { throw "$($f[0]) is empty" }
+    Move-Item $tmp (Join-Path $OcDir $f[0]) -Force
+  }
+}
+
 $markets = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json)
 $hasMarket = [bool]($markets | Where-Object { $_.name -eq $Market })
 $plugins = (& claude plugin list --json 2>$null | ConvertFrom-Json)
@@ -72,12 +89,19 @@ if ($Uninstall) {
   if ($hasPlugin) { Invoke-Claude @('plugin', 'uninstall', $Plugin, '--scope', 'user') }
   if ($hasMarket) { Invoke-Claude @('plugin', 'marketplace', 'remove', $Market) }
   Set-AutoUpdate $false ''
+  if ((Test-Path $OcDir) -and $PSCmdlet.ShouldProcess($OcDir, 'remove opencode plugin')) { Remove-Item -Recurse -Force $OcDir }
   if (-not $WhatIfPreference) { Write-Host 'ClauDiscobombulating removed.' }
   return
 }
 
 $hasLocal = $Root -and (Test-Path (Join-Path $Root 'plugin/.claude-plugin/plugin.json'))
 if (-not $hasLocal -and -not $Repo) { throw "plugin folder missing in $Root" }
+$withOpenCode = $false
+if ($hasOpenCode) {
+  # no console to ask (redirected input) counts as the default yes — 2026-10-11
+  $answer = try { Read-Host 'opencode found. Install the opencode plugin too? [Y/n]' } catch { '' }
+  $withOpenCode = $answer -notmatch '^\s*n'
+}
 if ($hasLocal) { Invoke-Claude @('plugin', 'validate', (Join-Path $Root 'plugin')) }
 foreach ($id in $legacyPlugins) { Invoke-Claude @('plugin', 'uninstall', $id, '--scope', 'user') }
 foreach ($name in $legacyMarkets) { Invoke-Claude @('plugin', 'marketplace', 'remove', $name) }
@@ -87,6 +111,10 @@ Invoke-Claude @('plugin', 'marketplace', 'add', $(if ($Repo) { $Repo } else { $R
 Invoke-Claude @('plugin', 'install', $Plugin, '--scope', 'user')
 # a local-folder install has no remote to pull from — 2026-10-06
 if ($Repo) { Set-AutoUpdate $true $Repo }
-if (-not $WhatIfPreference) { Write-Host 'ClauDiscobombulating installed. Restart Claude Code and the desktop app.' }
+if ($withOpenCode) { Install-OpenCode }
+if (-not $WhatIfPreference) {
+  Write-Host 'ClauDiscobombulating installed. Restart Claude Code and the desktop app.'
+  if ($withOpenCode) { Write-Host "opencode plugin in $OcDir. Restart opencode." }
+}
 
 
