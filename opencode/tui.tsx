@@ -22,6 +22,10 @@ const EFFORT_BARS = "▁▂▃▄▅▆▇█"
 const RED = "#ef5b5b"
 const YELLOW = "#f0b429"
 const GREEN = "#3fbf8f"
+const BLUE = "#4f9cf0"
+const PURPLE = "#b678e0"
+const CYAN = "#56b6c2"
+const WHEEL_GAP_MS = 80
 
 const UK = {
   defaultText: "продовжуй",
@@ -38,6 +42,9 @@ const UK = {
   sendBtn: "✓ відправити",
   cancelBtn: "✕ скасувати",
   sendFailed: "Не вдалося відправити",
+  timer: "Таймер",
+  model: "Модель",
+  effortHint: "змінити",
 }
 const EN: typeof UK = {
   defaultText: "continue",
@@ -54,8 +61,12 @@ const EN: typeof UK = {
   sendBtn: "✓ send",
   cancelBtn: "✕ cancel",
   sendFailed: "Could not send",
+  timer: "Timer",
+  model: "Model",
+  effortHint: "to change",
 }
 
+const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
 const two = (n: number) => String(n).padStart(2, "0")
 const wrap = (i: number, n: number) => ((i % n) + n) % n
 const tone = (p: number) => (p >= 90 ? RED : p >= 70 ? YELLOW : GREEN)
@@ -291,25 +302,38 @@ function setup(context: Ctx) {
   tick()
   const every = setInterval(tick, 1000)
 
-  const Click = (p: { label: string; fg?: unknown; onClick: () => void; onScroll?: (dir: number) => void }) => (
-    <text
-      fg={(p.fg ?? theme.text.base) as never}
-      onMouseUp={() => p.onClick()}
-      onMouseScroll={e => {
-        if (!p.onScroll || !e.scroll) return
-        e.stopPropagation()
-        p.onScroll(e.scroll.direction === "up" ? 1 : -1)
-      }}
-    >
-      {p.label}
+  let lastWheel = 0
+  function wheel(e: { scroll?: { direction: string }; stopPropagation(): void }, step: (dir: number) => void) {
+    if (!e.scroll) return
+    e.stopPropagation()
+    const t = Date.now()
+    // a notch can arrive as a burst of events — 2026-10-11
+    if (t - lastWheel < WHEEL_GAP_MS) return
+    lastWheel = t
+    step(e.scroll.direction === "up" ? 1 : -1)
+  }
+
+  const Click = (p: { label: string; fg?: unknown; bold?: boolean; onClick: () => void; onScroll?: (dir: number) => void }) => (
+    <text fg={(p.fg ?? theme.text.base) as never} onMouseUp={() => p.onClick()} onMouseScroll={e => p.onScroll && wheel(e, p.onScroll)}>
+      {p.bold ? <b>{p.label}</b> : p.label}
     </text>
+  )
+
+  const Card = (p: { label: string; fg: string; onClick: () => void }) => (
+    <box border borderStyle="rounded" borderColor={p.fg} flexGrow={1} alignItems="center" onMouseUp={() => p.onClick()}>
+      <text fg={p.fg}>{p.label}</text>
+    </box>
   )
 
   function Section(p: { sessionID: string }) {
     const sid = () => p.sessionID
     const variants = createMemo(() => ui.model.variant.list())
     const variant = createMemo(() => ui.model.current()?.variant)
+    const hue = createMemo(() => effortHue(variant()) ?? theme.border.base)
+    const chord = createMemo(() => keymap.shortcuts("variant.cycle")[0])
     const draft = createMemo(() => shownDraft())
+    const armed = () => mem.timer.at > 0
+    const text = () => `«${mem.timer.text || tr().defaultText}»`
     return (
       <box gap={1}>
         <box>
@@ -323,11 +347,94 @@ function setup(context: Ctx) {
             <Click label={`✦ ${tr().updateAvail} v${mem.latest}`} fg={YELLOW} onClick={() => void selfUpdate()} />
           </Show>
         </box>
-        <Show when={limits().length > 0}>
-          <box>
+
+        <box border borderStyle="rounded" borderColor={armed() ? YELLOW : theme.border.base} title={` ${tr().timer} `} titleColor={theme.text.muted} paddingX={1}>
+          <Show
+            when={armed()}
+            fallback={
+              <>
+                <box flexDirection="row" justifyContent="space-between">
+                  <box flexDirection="row">
+                    <text fg={theme.text.base}>{"⏰ "}</text>
+                    <Click label={two(draft().h)} bold onClick={() => nudge("h", 1)} onScroll={d => nudge("h", d)} />
+                    <text fg={theme.text.muted}>{" : "}</text>
+                    <Click label={two(draft().m)} bold onClick={() => nudge("m", 1)} onScroll={d => nudge("m", d)} />
+                  </box>
+                  <Click label={tr().sendBtn} fg={GREEN} onClick={() => arm(sid())} />
+                </box>
+                <Click label={text()} fg={theme.text.muted} onClick={() => void editText()} />
+              </>
+            }
+          >
+            <box flexDirection="row" justifyContent="space-between">
+              <text fg={YELLOW}>
+                <b>{`⏰ ${two(new Date(mem.timer.at).getHours())} : ${two(new Date(mem.timer.at).getMinutes())}`}</b>
+              </text>
+              <Click label={tr().cancelBtn} fg={theme.text.muted} onClick={() => setMem(s => void (s.timer = { ...s.timer, at: 0 }))} />
+            </box>
+            <text fg={theme.text.muted}>{`${text()} · ${tr().via} ${resetIn(new Date(mem.timer.at).toISOString(), now())}`}</text>
+          </Show>
+        </box>
+
+        <box flexDirection="row" gap={1}>
+          <Card label="☰ Sessions" fg={PURPLE} onClick={() => keymap.dispatch("session.list")} />
+          <Card label="⟲ Resume" fg={GREEN} onClick={() => void send(sid(), RESUME_TEXT)} />
+          <Card label="⇊ Compact" fg={BLUE} onClick={() => keymap.dispatch("session.compact")} />
+        </box>
+
+        <box>
+          <box
+            border
+            borderStyle="rounded"
+            borderColor={CYAN}
+            title={` ${tr().model} `}
+            titleColor={theme.text.muted}
+            paddingX={1}
+            flexDirection="row"
+            justifyContent="space-between"
+            onMouseUp={() => keymap.dispatch("model.list")}
+          >
             <text fg={theme.text.base}>
-              <b>OpenCode Go</b>
+              <b>{modelName()}</b>
             </text>
+            <text fg={CYAN}>▾</text>
+          </box>
+          <Show when={variants().length > 0}>
+            <box
+              border
+              borderStyle="rounded"
+              borderColor={hue()}
+              title=" Effort "
+              titleColor={theme.text.muted}
+              bottomTitle={chord() ? ` ${chord()} ${tr().effortHint} ` : undefined}
+              bottomTitleAlignment="right"
+              paddingX={1}
+              flexDirection="row"
+              justifyContent="space-between"
+              onMouseScroll={e => wheel(e, cycleVariant)}
+            >
+              <box flexDirection="row" gap={2}>
+                <Click label="◀" fg={theme.text.muted} onClick={() => cycleVariant(-1)} />
+                <text fg={hue()}>
+                  <b>{variant() ?? "default"}</b>
+                </text>
+                <Click label="▶" fg={theme.text.muted} onClick={() => cycleVariant(1)} />
+              </box>
+              <text>
+                <For each={variants()}>
+                  {(v, k) => {
+                    const at = () => variants().indexOf(variant() ?? "")
+                    const bar = EFFORT_BARS[Math.min(EFFORT_BARS.length - 1, Math.round((k() * (EFFORT_BARS.length - 1)) / Math.max(1, variants().length - 1)))]
+                    return <span style={{ fg: k() <= at() ? (effortHue(v) ?? GREEN) : theme.border.base }}>{bar}</span>
+                  }}
+                </For>
+              </text>
+            </box>
+          </Show>
+        </box>
+
+        <Show when={limits().length > 0}>
+          <box border borderStyle="rounded" borderColor={theme.border.base} title=" OpenCode Go " titleColor={theme.text.muted} paddingX={1}>
             <For each={limits()}>
               {l => {
                 const n = () => Math.round(Math.min(l.percentUsed, 100) / 10)
@@ -335,8 +442,8 @@ function setup(context: Ctx) {
                   <text>
                     <span style={{ fg: theme.text.muted }}>{`${shortName(l.kind).padEnd(3)} `}</span>
                     <span style={{ fg: tone(l.percentUsed) }}>{"━".repeat(n())}</span>
-                    <span style={{ fg: theme.text.muted }}>{"─".repeat(10 - n())}</span>
-                    <span style={{ fg: tone(l.percentUsed) }}>{` ${Math.round(l.percentUsed)}%`}</span>
+                    <span style={{ fg: theme.border.base }}>{"─".repeat(10 - n())}</span>
+                    <span style={{ fg: tone(l.percentUsed) }}>{` ${String(Math.round(l.percentUsed)).padStart(3)}%`}</span>
                     <Show when={l.resetsAt}>
                       <span style={{ fg: theme.text.muted }}>{` ↻ ${resetIn(l.resetsAt, now())}`}</span>
                     </Show>
@@ -346,54 +453,6 @@ function setup(context: Ctx) {
             </For>
           </box>
         </Show>
-        <box>
-          <Show
-            when={mem.timer.at > 0}
-            fallback={
-              <>
-                <box flexDirection="row">
-                  <text fg={theme.text.base}>{"⏰ "}</text>
-                  <Click label={two(draft().h)} onClick={() => nudge("h", 1)} onScroll={d => nudge("h", d)} />
-                  <text fg={theme.text.muted}>{" : "}</text>
-                  <Click label={two(draft().m)} onClick={() => nudge("m", 1)} onScroll={d => nudge("m", d)} />
-                  <text>{"  "}</text>
-                  <Click label={tr().sendBtn} fg={GREEN} onClick={() => arm(sid())} />
-                </box>
-                <Click label={`«${mem.timer.text || tr().defaultText}»`} fg={theme.text.muted} onClick={() => void editText()} />
-              </>
-            }
-          >
-            <box flexDirection="row">
-              <text fg={YELLOW}>{`⏰ ${two(new Date(mem.timer.at).getHours())} : ${two(new Date(mem.timer.at).getMinutes())}  `}</text>
-              <Click label={tr().cancelBtn} fg={theme.text.muted} onClick={() => setMem(s => void (s.timer = { ...s.timer, at: 0 }))} />
-            </box>
-            <text fg={theme.text.muted}>{`«${mem.timer.text || tr().defaultText}» · ${tr().via} ${resetIn(new Date(mem.timer.at).toISOString(), now())}`}</text>
-          </Show>
-        </box>
-        <box flexDirection="row" gap={2}>
-          <Click label="☰ Sessions" fg="#b678e0" onClick={() => keymap.dispatch("session.list")} />
-          <Click label="⟲ Resume" fg={GREEN} onClick={() => void send(sid(), RESUME_TEXT)} />
-          <Click label="⇊ Compact" fg="#4f9cf0" onClick={() => keymap.dispatch("session.compact")} />
-        </box>
-        <box>
-          <Click label={`${modelName()} ▾`} onClick={() => keymap.dispatch("model.list")} />
-          <Show when={variants().length > 0}>
-            <box flexDirection="row" gap={1}>
-              <Click label="◀" fg={theme.text.muted} onClick={() => cycleVariant(-1)} onScroll={d => cycleVariant(-d)} />
-              <text fg={theme.text.base}>{variant() ?? "default"}</text>
-              <Click label="▶" fg={theme.text.muted} onClick={() => cycleVariant(1)} onScroll={d => cycleVariant(-d)} />
-              <text>
-                <For each={variants()}>
-                  {(v, k) => {
-                    const at = () => variants().indexOf(variant() ?? "")
-                    const bar = EFFORT_BARS[Math.min(EFFORT_BARS.length - 1, Math.round((k() * (EFFORT_BARS.length - 1)) / Math.max(1, variants().length - 1)))]
-                    return <span style={{ fg: k() <= at() ? GREEN : theme.text.muted }}>{bar}</span>
-                  }}
-                </For>
-              </text>
-            </box>
-          </Show>
-        </box>
       </box>
     )
   }

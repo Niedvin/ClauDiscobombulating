@@ -14,6 +14,9 @@ function stub(on: any, placed: boolean) {
   on('ui.open', () => ({ value: { isPlaced: placed } }))
   on('ui.panes', () => ({ value: placed ? [{ id: 'ClauDiscobombulating', isPlaced: true, isShown: true }] : [] }))
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  on('fs.read', (_$: any, e: any, next: any) =>
+    e.path.endsWith('keybindings.json') ? { value: JSON.stringify({ bindings: [{ context: 'Global', bindings: { 'ctrl+t': 'pane:next' } }] }) } : next(e),
+  )
   on('command.run', (_$: any, e: any) => {
     ran.push(`${e.command} ${e.args ?? ''}`.trim())
     return { text: e.command === 'effort' ? `Set effort level to ${e.args}` : '' }
@@ -34,6 +37,7 @@ test('band drawn before full mode redraws with the ctrl+t effort buttons', { tim
   await clock.advance(1100)
   expect(JSON.stringify(await band.find({ key: 'e-next' }))).toContain('pane:next')
   expect(JSON.stringify(await band.find({ key: 'e-prev' }))).toContain('pane:previous')
+  expect(JSON.stringify(await band.drawn())).toContain('"ctrl+t"')
 })
 
 test('open pane carries the ctrl+t effort buttons', { timeoutMs: 20000 }, async ($, on) => {
@@ -44,6 +48,8 @@ test('open pane carries the ctrl+t effort buttons', { timeoutMs: 20000 }, async 
   const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE })
   expect(JSON.stringify(await pane.find({ key: 'e-next' }))).toContain('pane:next')
   expect(JSON.stringify(await pane.find({ key: 'e-prev' }))).toContain('pane:previous')
+  expect(JSON.stringify(await pane.drawn())).toContain(' to change')
+  expect(JSON.stringify(await pane.drawn())).toContain('"ctrl+t"')
   await pane.press({ key: 'e-next' })
   await clock.advance(800)
   expect(ran).toContain('effort xhigh')

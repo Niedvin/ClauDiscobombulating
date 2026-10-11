@@ -22,16 +22,16 @@ Mod for Claude Code (console + Claude desktop), plus a sidebar plugin for openco
 - **Language:** Ukrainian when the system language is Ukrainian, English otherwise (`d`, `h`, `m`, `send`, `cancel`, …). Force it with env `CLAUDISCOBOMBULATING_LANG=uk` or `en`.
 - **Limits shared between sessions:** every session shows the freshest limits, not only after its own first reply. Works on Windows, macOS and Linux.
 - Cache alert sound: `plugin/assets/cache-alert.mp3`, installed with the plugin. Windows: system toast + sound. macOS: sound (system player, `afplay`) + in-app toast. Other systems: in-app toast only.
-- **ctrl+t cycles effort** (console): the effort ◀/▶ in the band and in the pane carry the engine actions `pane:previous` / `pane:next`, so the chord itself lives in `~/.claude/keybindings.json` — this setup binds `ctrl+t` / `ctrl+shift+t` there. The engine takes those actions over only while 2+ panes are open.
+- **ctrl+t cycles effort** (console): the effort ◀/▶ in the band and in the pane carry the engine actions `pane:previous` / `pane:next`, so the chord itself lives in `~/.claude/keybindings.json` — this setup binds `ctrl+t` / `ctrl+shift+t` there. The engine takes those actions over only while 2+ panes are open. The effort block shows the chord you bound (`ctrl+t змінити`); no binding, no hint.
 - **Update check**: the pane header reads the released version from GitHub when a session starts. When a newer release exists it draws `v1.1.8 ✦ нова v1.1.9`; a click runs `claude plugin update`. Restart applies.
 
 ## opencode
 
 opencode already has a sidebar; the plugin adds its blocks there, under opencode's own context block:
 
-- OpenCode Go limits (5h, 7d, month) with reset times, read every minute from opencode.ai with the Go key opencode already keeps (`auth.json`). No Go subscription → no block.
+- OpenCode Go limits (5h, 7d, month) with reset times, last in the sidebar, read every minute from opencode.ai with the Go key opencode already keeps (`auth.json`). No Go subscription → no block.
 - Message timer (click or wheel on hours / minutes, click the text to edit it), Sessions, Resume, Compact. Resume and the timer send with the model picked in the prompt.
-- Model (click opens the model list) and variant ◀ ▶ (= effort). `ctrl+t` cycles it, opencode's own key.
+- Model (click opens the model list) and Effort, the model variant: ◀ ▶, the wheel over the box, or `ctrl+t` (opencode's own key, shown on the box).
 - Update check: `✦ new vX` under the header; a click downloads the new files, opencode reloads them.
 
 Not in opencode: Claude limits, cache timer, auto compact.

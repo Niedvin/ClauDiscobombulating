@@ -15,7 +15,7 @@ const APPLY_MS = 700
 const UNREAD = '?'
 const PANE = 'ClauDiscobombulating'
 const PANE_COLS = 24
-const STACK_ROWS = 21
+const STACK_ROWS = 22
 // the 4+1 before the timer is the name header (4 rows) plus its gap — 2026-10-11
 const CARDS_ROWS = 4 + 1 + 7 + 1 + STACK_ROWS
 const RESUME_TERMINAL = '--resume'
@@ -59,6 +59,7 @@ const UK = {
   placeholder: 'текст повідомлення',
   cancelBtn: '✕  скасувати',
   sendBtn: '✓  відправити',
+  effortHint: 'змінити',
 }
 const EN: typeof UK = {
   defaultText: 'continue',
@@ -86,6 +87,7 @@ const EN: typeof UK = {
   placeholder: 'message text',
   cancelBtn: '✕  cancel',
   sendBtn: '✓  send',
+  effortHint: 'to change',
 }
 let tr = EN
 
@@ -628,9 +630,24 @@ async function doUpdate($: EngineInterface) {
   }
 }
 
+let effortChord = ''
+// the chord is whatever the person bound to pane:next, so the hint names theirs or nothing — 2026-10-11
+async function loadChord($: EngineInterface) {
+  const dir = (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${await homeDir($)}/.claude`
+  const kb = JSON.parse(await $.fs.read(`${dir}/keybindings.json`)) as { bindings?: { bindings?: Record<string, unknown> }[] }
+  for (const block of kb.bindings ?? []) {
+    const hit = Object.entries(block.bindings ?? {}).find(([, action]) => action === 'pane:next')
+    if (hit) {
+      effortChord = hit[0]
+      return
+    }
+  }
+}
+
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
+  await loadChord($).catch(() => undefined)
   await update($, full, () => true)
   await loadVersion($).catch(() => undefined)
   void checkVersion($).catch(() => undefined)
@@ -858,6 +875,7 @@ export const register: Register = on => {
                 ))}
               </Text>
               <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
+              {effortChord ? <Text key="chord" dimColor>{effortChord}</Text> : null}
             </Box>
           </Box>
         )}
@@ -911,7 +929,7 @@ export const register: Register = on => {
     const height = Math.max(rows, CARDS_ROWS)
     const stack = height - STACK_ROWS
     // the timer follows the 4-row header and its 1-row gap — 2026-10-11
-    paneRows = { timer: [5, 11], model: [stack + 12, stack + 15], effort: [stack + 17, stack + 20] }
+    paneRows = { timer: [5, 11], model: [stack + 12, stack + 15], effort: [stack + 17, stack + 21] }
     paneWidth = width
     const latestV = await read($, latest)
     const alarm = await read($, timer)
@@ -998,6 +1016,11 @@ export const register: Register = on => {
             {EFFORTS.map((lv, k) => (
               <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k].repeat(2)} </Text>
             ))}
+          </Text>
+          {/* the row stays without a chord: STACK_ROWS and the wheel zones count it — 2026-10-11 */}
+          <Text key="chord">
+            <Text bold color="#9a9aab">{effortChord}</Text>
+            <Text dimColor>{effortChord ? ` ${tr.effortHint}` : ' '}</Text>
           </Text>
         </Box>
         </Box>

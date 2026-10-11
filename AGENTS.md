@@ -40,7 +40,7 @@ Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version 
 - Cache alert: `left <= ALERT_MIN` (10), once per idle period (`alerted` state). In-app toast + Windows toast + `cache-alert.mp3` via `powershell.exe` (`ALERT_PS`, env-passed text, no double quotes in it). `lastActive` persists in `activeAt` state (survives reload), is restored on resume from `classic.SessionStart` `seconds_since_last_response`, and restarts at every real compaction.
 
 - Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`, else a 5h wall bucket). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after. Skipped when `five_hour` resets in < 59 min (`NO_COMPACT_BEFORE_RESET_MS`).
-- ctrl+t cycles effort: band ◀/▶ and the pane's effort card ◀/▶ (keys `e-prev`/`e-next`) carry engine actions `pane:previous`/`pane:next`; the band hides its picker while the pane is open, so the pane must carry them too. The engine's own handler for those actions runs only with 2+ panes open. The chord lives in the person's `~/.claude/keybindings.json`.
+- ctrl+t cycles effort: band ◀/▶ and the pane's effort card ◀/▶ (keys `e-prev`/`e-next`) carry engine actions `pane:previous`/`pane:next`; the band hides its picker while the pane is open, so the pane must carry them too. The engine's own handler for those actions runs only with 2+ panes open. The chord lives in the person's `~/.claude/keybindings.json`; `loadChord` reads the one bound to `pane:next` and both effort blocks show it as a hint (band: chord after ▶; pane: 3rd card row `ctrl+t змінити`, kept blank without a binding so `STACK_ROWS` holds).
 - New version: header compares `pluginVersion` with `latest` (GitHub raw, checked at session start); the click runs `claude plugin update`, restart applies — 2026-10-11.
 
 ## Runtime files
@@ -66,6 +66,8 @@ Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version 
 
 Published as marketplace `ClauDiscobombulating` (repo root has `.claude-plugin/marketplace.json`). Users: `.\install.ps1 -Repo Niedvin/ClauDiscobombulating` — also writes `extraKnownMarketplaces.ClauDiscobombulating` (github source, `autoUpdate: true`) into `settings.json` (backup in `.backups/`); `-Uninstall` removes it. Local install leaves settings alone.
 
+Version: never bump per fix. Batch fixes and features; bump once, only when the user asks to push/release, to the version they name (else the next minor). A string of 0.0.1 bumps spams every install with updates.
+
 Release: bump `version` in `plugin.json`, commit (`release: X.Y.Z`), push, then `gh release create vX.Y.Z --title "ClauDiscobombulating X.Y.Z" --generate-notes` — one GitHub release per shipped version. Installed copies pull it.
 
 ## opencode plugin
@@ -75,7 +77,8 @@ Release: bump `version` in `plugin.json`, commit (`release: X.Y.Z`), push, then 
 - Limits: `GET https://opencode.ai/zen/go/v1/usage` (undocumented), `Authorization: Bearer <opencode-go key>` from `<XDG_DATA_HOME or ~/.local/share>/opencode/auth.json`, needs a `User-Agent` (Cloudflare 1010 otherwise). Returns `usage.{rolling,weekly,monthly}.{percent,resetsAt}`. Polled every 60 s.
 - Cut on purpose (user: commands first, anything shaky goes): Claude limits, cache timer/alert, auto compact.
 - Sending: `client.session.prompt` uses the session's stored model, so `send` calls `client.session.switchModel` to `ui.model.current()` first. Compact = `keymap.dispatch("session.compact")`.
-- Effort = model variant (`ui.model.variant`); `ctrl+t` is opencode's own `variant.cycle`.
+- Effort = model variant (`ui.model.variant`); `ctrl+t` is opencode's own `variant.cycle`, its chord shown via `keymap.shortcuts("variant.cycle")` in the Effort box's bottom title. Wheel anywhere on the Effort box cycles it (up = higher; `WHEEL_GAP_MS` drops bursts).
+- Layout, top → bottom: header, Timer box, Sessions/Resume/Compact cards in one row, Model box + Effort box (joined), OpenCode Go limits box last. Rounded borders with `title`; sidebar content ≈ 37 cols, so the three cards fill it exactly — no padding inside them.
 - Self-update: `✦ new vX` → `opencode/tui.tsx` + `plugin/.claude-plugin/plugin.json` from `main` via the GitHub contents API (raw.githubusercontent.com lags ≈5 min after a push), temp write, rename; opencode hot-reloads it. Both files on `main` must stay in step with the release. Installers copy from the marketplace clone (`installLocation`) for the same reason.
 - UI strings: `UK`/`EN` in `tui.tsx`, same rule as the Claude side.
 - Type-check: copy to `src/tui.tsx` of a scratch npm project (`@opencode/plugin`, `@opencode/theme`, `@opentui/core`, `@opentui/solid`, `solid-js`, `@types/bun`, `@types/node`, `typescript`; tsconfig `jsx: preserve`, `jsxImportSource: @opentui/solid`), `npx tsc -p .`. Live test: never against the real dirs (a variant change persists to `~/.local/state/opencode/model.json`). Temp `XDG_CONFIG_HOME` (plugin in `opencode/plugins/claudiscobombulating/`), `XDG_DATA_HOME` (copy of `opencode/auth.json`), `XDG_STATE_HOME` (`opencode/model.json` picking a free model), then `opencode api session.create --standalone -d '{"location":{"directory":…}}'` and `opencode --standalone --session <id> <dir>` in a PTY (SGR mouse clicks work). `--standalone` avoids the managed service port. Delete the temp dirs after (auth copy).
