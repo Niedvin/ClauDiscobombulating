@@ -9,7 +9,7 @@ async function boot($: any, on: any, answer: string, limits: any[] = []) {
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', () => ({ value: {} }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: limits } }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('tool.register', (_$: any, e: any) => ({ value: { tool: e.name } }))
   on('command.register', (_$: any, e: any) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -31,7 +31,7 @@ async function boot($: any, on: any, answer: string, limits: any[] = []) {
     return { result: { questions: e.questions, answers: { [q]: answer } } }
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const pane = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscombobulating', props: PANE })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE })
   return { sent, asked, ran, pane }
 }
 

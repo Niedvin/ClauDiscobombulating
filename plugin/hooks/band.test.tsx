@@ -13,7 +13,7 @@ test('desktop app (start surface null, then attach): only limits and cache', { t
       { kind: 'seven_day', percentUsed: 74 },
     ],
   } }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.attach', (_$, e) => ({ clientId: e.clientId }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -44,7 +44,7 @@ test('desktop app (start surface null, then attach): only limits and cache', { t
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(6 * 60000)
 
-  const band = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  const band = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   const s = JSON.stringify(await band.drawn())
   expect(s).toContain('кеш 54хв')
   expect(s).toContain('5г')
@@ -53,7 +53,7 @@ test('desktop app (start surface null, then attach): only limits and cache', { t
   expect(s).toContain('↻')
   expect(s).not.toContain('Opus')
 
-  const mode = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+  const mode = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
   expect(JSON.stringify(await mode.drawn())).toContain('FOOTER')
   expect(calls).toEqual([])
 })
@@ -62,7 +62,7 @@ test('desktop compact button: effort low, compact, effort back', { timeoutMs: 20
   const clock = mock.clock(on, { now: 1_000_000 })
   const ran: string[] = []
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 8 }] } }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', () => ({ value: { effortLevel: 'xhigh' } }))
@@ -72,7 +72,7 @@ test('desktop compact button: effort low, compact, effort back', { timeoutMs: 20
   })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.advance(1100)
-  const band = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  const band = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   await band.press({ key: 'compact' })
   expect(ran).toEqual(['effort low', 'compact', 'effort xhigh'])
 })

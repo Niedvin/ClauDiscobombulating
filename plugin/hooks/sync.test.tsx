@@ -7,7 +7,7 @@ test('terminal pane: cards draw with saved effort', { timeoutMs: 20000 }, async 
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', (_$, e) => ({ value: e.source === 'flag' ? {} : { effortLevel: 'low' } }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 91 }] } }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -18,16 +18,16 @@ test('terminal pane: cards draw with saved effort', { timeoutMs: 20000 }, async 
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({
-    plugin: 'ClauDiscombobulating',
+    plugin: 'ClauDiscobombulating',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'ClauDiscombobulating',
+    requestId: 'ClauDiscobombulating',
     props: { title: 't', isFocused: false, bodyColumns: 24, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
   })
   const s = JSON.stringify(await band.drawn())
   expect(s).toContain('Opus 5.5')
   expect(s).toContain('"low"')
-  const mode = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  const mode = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
   expect(JSON.stringify(await mode.drawn())).toContain('━━━━━━━━━')
 })
 
@@ -37,7 +37,7 @@ test(`cache timer on ${surface}: 55 down to 0, terminal hides first 5 min`, { ti
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', () => ({ value: {} }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] } }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -48,8 +48,8 @@ test(`cache timer on ${surface}: 55 down to 0, terminal hides first 5 min`, { ti
   await $.session.start({ cwd: '/', surface, isInteractive: true })
   const mode = await $.ui.mount(
     surface === 'desktop'
-      ? { plugin: 'ClauDiscombobulating', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} } }
-      : { plugin: 'ClauDiscombobulating', surface, component: 'SessionMode', props: { modes: [] } },
+      ? { plugin: 'ClauDiscobombulating', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} } }
+      : { plugin: 'ClauDiscobombulating', surface, component: 'SessionMode', props: { modes: [] } },
   )
   const text = async () => JSON.stringify(await mode.drawn())
   expect(await text()).not.toContain('кеш')
@@ -80,7 +80,7 @@ test('cache timer restarts at a compact', { timeoutMs: 20000 }, async ($, on) =>
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', () => ({ value: {} }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] } }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -90,7 +90,7 @@ test('cache timer restarts at a compact', { timeoutMs: 20000 }, async ($, on) =>
   on('turn.complete', () => ({ text: '' }))
   on('session.compact', () => ({ messages: [{ role: 'assistant', text: 'summary', toolUses: [] }] }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const mode = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  const mode = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
   const text = async () => JSON.stringify(await mode.drawn())
   await $.turn.start({ text: 'hi', turnId: 't1' })
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })

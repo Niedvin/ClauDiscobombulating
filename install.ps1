@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Installs the ClauDiscombobulating mod for Claude Code (user scope).
+  Installs the ClauDiscobombulating mod for Claude Code (user scope).
 .DESCRIPTION
   One install serves both apps, the mod picks its mode by surface:
   console = full mod, Claude desktop = limits + cache timer under the prompt.
@@ -14,9 +14,9 @@ param([switch]$Uninstall, [string]$Repo)
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 # piped from GitHub there is no local folder, so the GitHub copy is the only source — 2026-10-06
-if (-not $Root -and -not $Repo) { $Repo = 'Niedvin/ClauDiscombobulating' }
-$Market = 'ClauDiscombobulating'
-$Plugin = "ClauDiscombobulating@$Market"
+if (-not $Root -and -not $Repo) { $Repo = 'Niedvin/ClauDiscobombulating' }
+$Market = 'ClauDiscobombulating'
+$Plugin = "ClauDiscobombulating@$Market"
 
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw 'claude CLI not found in PATH' }
 
@@ -48,8 +48,11 @@ function Set-AutoUpdate([bool]$On, [string]$Source) {
   if ($On) {
     $entry = [pscustomobject]@{ source = [pscustomobject]@{ source = 'github'; repo = $Source }; autoUpdate = $true }
     $entries | Add-Member -NotePropertyName $Market -NotePropertyValue $entry -Force
-  } elseif ($entries.PSObject.Properties[$Market]) {
+    # a pre-rename key would keep auto-updating a marketplace that is gone — 2026-10-11
+    $entries.PSObject.Properties.Remove('ClauDiscombobulating')
+  } else {
     $entries.PSObject.Properties.Remove($Market)
+    $entries.PSObject.Properties.Remove('ClauDiscombobulating')
   }
   New-Item -ItemType Directory -Force $ConfigDir | Out-Null
   $tmp = "$Settings.tmp"
@@ -62,14 +65,14 @@ $hasMarket = [bool]($markets | Where-Object { $_.name -eq $Market })
 $plugins = (& claude plugin list --json 2>$null | ConvertFrom-Json)
 $hasPlugin = [bool]($plugins | Where-Object { $_.id -eq $Plugin })
 # the mod was called prompt-bar before the rename — 2026-10-06
-$legacyPlugins = @('prompt-bar@prompt-bar-local', 'prompt-bar@prompt-bar') | Where-Object { $id = $_; $plugins | Where-Object { $_.id -eq $id } }
-$legacyMarkets = @('prompt-bar-local', 'prompt-bar') | Where-Object { $name = $_; $markets | Where-Object { $_.name -eq $name } }
+$legacyPlugins = @('ClauDiscombobulating@ClauDiscombobulating', 'prompt-bar@prompt-bar-local', 'prompt-bar@prompt-bar') | Where-Object { $id = $_; $plugins | Where-Object { $_.id -eq $id } }
+$legacyMarkets = @('ClauDiscombobulating', 'prompt-bar-local', 'prompt-bar') | Where-Object { $name = $_; $markets | Where-Object { $_.name -eq $name } }
 
 if ($Uninstall) {
   if ($hasPlugin) { Invoke-Claude @('plugin', 'uninstall', $Plugin, '--scope', 'user') }
   if ($hasMarket) { Invoke-Claude @('plugin', 'marketplace', 'remove', $Market) }
   Set-AutoUpdate $false ''
-  if (-not $WhatIfPreference) { Write-Host 'ClauDiscombobulating removed.' }
+  if (-not $WhatIfPreference) { Write-Host 'ClauDiscobombulating removed.' }
   return
 }
 
@@ -84,6 +87,6 @@ Invoke-Claude @('plugin', 'marketplace', 'add', $(if ($Repo) { $Repo } else { $R
 Invoke-Claude @('plugin', 'install', $Plugin, '--scope', 'user')
 # a local-folder install has no remote to pull from — 2026-10-06
 if ($Repo) { Set-AutoUpdate $true $Repo }
-if (-not $WhatIfPreference) { Write-Host 'ClauDiscombobulating installed. Restart Claude Code and the desktop app.' }
+if (-not $WhatIfPreference) { Write-Host 'ClauDiscobombulating installed. Restart Claude Code and the desktop app.' }
 
 

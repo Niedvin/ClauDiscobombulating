@@ -25,7 +25,7 @@ async function band($: any, on: any, env: Record<string, string>, stdout = '') {
   await $.turn.start({ text: 'hi', turnId: 't1' })
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(6 * 60000)
-  const mounted = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  const mounted = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   return { text: JSON.stringify(await mounted.drawn()), spawned, toasts }
 }
 
@@ -54,8 +54,8 @@ test('windows with an english display language', { timeoutMs: 20000 }, async ($,
   expect(en.text).toContain('cache 54m')
 })
 
-test('CLAUDISCOMBOBULATING_LANG overrides detection', { timeoutMs: 20000 }, async ($, on) => {
-  const { text, spawned } = await band($, on, { CLAUDISCOMBOBULATING_LANG: 'uk', LANG: 'en_US.UTF-8' })
+test('CLAUDISCOBOMBULATING_LANG overrides detection', { timeoutMs: 20000 }, async ($, on) => {
+  const { text, spawned } = await band($, on, { CLAUDISCOBOMBULATING_LANG: 'uk', LANG: 'en_US.UTF-8' })
   expect(spawned).toEqual([])
   expect(text).toContain('кеш 54хв')
 })

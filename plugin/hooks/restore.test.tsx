@@ -11,7 +11,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.panes', () => ({ value: [] }))
     on('ui.toast', () => ({ value: undefined }))
-    on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+    on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
     on('session.start', (_$, e) => ({ cwd: e.cwd }))
     on('classic.SessionStart', () => ({}))
     await $.session.start({ cwd: '/', surface, isInteractive: true })
@@ -19,8 +19,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(1500)
     const mode = await $.ui.mount(
       surface === 'desktop'
-        ? { plugin: 'ClauDiscombobulating', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} } }
-        : { plugin: 'ClauDiscombobulating', surface, component: 'SessionMode', props: { modes: [] } },
+        ? { plugin: 'ClauDiscobombulating', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} } }
+        : { plugin: 'ClauDiscobombulating', surface, component: 'SessionMode', props: { modes: [] } },
     )
     expect(JSON.stringify(await mode.drawn())).toContain('кеш 20хв')
   })

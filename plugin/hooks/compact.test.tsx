@@ -21,7 +21,7 @@ async function run($: any, on: any, clock: any, idleMin: number, model: string, 
     return { text: e.command === 'effort' ? `Set effort level to ${e.args} (this session only): x` : `Set model to ${e.args}` }
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const pane = await $.ui.mount({ plugin: 'ClauDiscombobulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscombobulating', props: PANE })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE })
   await $.turn.start({ text: 'hi', turnId: 't1' })
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(idleMin * 60000)

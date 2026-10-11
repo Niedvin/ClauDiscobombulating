@@ -9,7 +9,7 @@ test('cache alert: one toast + sound script per idle period, 10 min before miss'
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.toast', () => ({ value: undefined }))
-  on('env.get', (_$, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('process.run', (_$, e) => {
     runs.push({ argv: e.argv, env: e.init?.env })
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
@@ -47,7 +47,7 @@ test('cache alert on macOS: the engine plays the clip', { timeoutMs: 30000 }, as
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('ui.toast', () => ({ value: undefined }))
-  on('env.get', (_$, e) => ({ value: e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$, e) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('audio.play', (_$, e) => {
     played.push(e.clip)
     return { value: undefined }
@@ -73,7 +73,7 @@ test('no cache alert while the 5h limit sits at 99%+', { timeoutMs: 30000 }, asy
   on('settings.read', () => ({ value: { effortLevel: 'high' } }))
   on('command.run', () => ({ text: 'ok' }))
   on('ui.toast', () => ({ value: undefined }))
-  on('env.get', (_$, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('process.run', (_$, e) => {
     runs.push({ argv: e.argv, env: e.init?.env })
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
@@ -98,7 +98,7 @@ test('no cache alert while a compact is within the last 5 turns', { timeoutMs: 3
   on('turn.complete', () => ({ text: '' }))
   on('session.compact', () => ({ messages: [{ role: 'assistant', text: 'summary', toolUses: [] }] }))
   on('ui.toast', () => ({ value: undefined }))
-  on('env.get', (_$, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'CLAUDISCOMBOBULATING_LANG' ? 'uk' : undefined }))
+  on('env.get', (_$, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('process.run', (_$, e) => {
     runs.push({ argv: e.argv, env: e.init?.env })
     return { value: { exitCode: 0, stdout: '', stderr: '' } }

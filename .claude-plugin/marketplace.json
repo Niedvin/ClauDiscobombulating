@@ -1,12 +1,12 @@
 {
-  "name": "ClauDiscombobulating",
-  "description": "ClauDiscombobulating mod for Claude Code",
+  "name": "ClauDiscobombulating",
+  "description": "ClauDiscobombulating mod for Claude Code",
   "owner": {
     "name": "Niedvin"
   },
   "plugins": [
     {
-      "name": "ClauDiscombobulating",
+      "name": "ClauDiscobombulating",
       "source": "./plugin",
       "description": "Console: limits, cache timer + alert, model/effort pickers, side pane. Desktop: limits and cache timer under the prompt."
     }

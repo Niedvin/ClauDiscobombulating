@@ -2,9 +2,9 @@
 # macOS/Linux installer, usage in README — 2026-10-06
 set -euo pipefail
 
-REPO="${CLAUDISCOMBOBULATING_REPO:-Niedvin/ClauDiscombobulating}"
-MARKET="ClauDiscombobulating"
-PLUGIN="ClauDiscombobulating@$MARKET"
+REPO="${CLAUDISCOBOMBULATING_REPO:-Niedvin/ClauDiscobombulating}"
+MARKET="ClauDiscobombulating"
+PLUGIN="ClauDiscobombulating@$MARKET"
 CONFIG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS="$CONFIG/settings.json"
 
@@ -23,8 +23,10 @@ cfg = json.load(open(path, encoding="utf-8")) if exists else {}
 known = cfg.setdefault("extraKnownMarketplaces", {})
 if on == "1":
     known[market] = {"source": {"source": "github", "repo": repo}, "autoUpdate": True}
+    known.pop("ClauDiscombobulating", None)
 else:
     known.pop(market, None)
+    known.pop("ClauDiscombobulating", None)
 if exists:
     bak = os.path.join(os.path.dirname(path), ".backups")
     os.makedirs(bak, exist_ok=True)
@@ -47,8 +49,8 @@ const exists = fs.existsSync(file)
 if (!exists && on !== '1') process.exit(0)
 const cfg = exists ? JSON.parse(fs.readFileSync(file, 'utf8')) : {}
 cfg.extraKnownMarketplaces = cfg.extraKnownMarketplaces || {}
-if (on === '1') cfg.extraKnownMarketplaces[market] = { source: { source: 'github', repo }, autoUpdate: true }
-else delete cfg.extraKnownMarketplaces[market]
+if (on === '1') { cfg.extraKnownMarketplaces[market] = { source: { source: 'github', repo }, autoUpdate: true }; delete cfg.extraKnownMarketplaces['ClauDiscombobulating'] }
+else { delete cfg.extraKnownMarketplaces[market]; delete cfg.extraKnownMarketplaces['ClauDiscombobulating'] }
 if (exists) {
   const bak = path.join(path.dirname(file), '.backups')
   fs.mkdirSync(bak, { recursive: true })
@@ -66,22 +68,22 @@ JS
   fi
 }
 
-# the mod was called prompt-bar before the rename — 2026-10-06
-for old in "$PLUGIN" prompt-bar@prompt-bar prompt-bar@prompt-bar-local; do
+# the mod was called prompt-bar before the rename, ClauDiscombobulating until 1.1.7 — 2026-10-11
+for old in "$PLUGIN" ClauDiscombobulating@ClauDiscombobulating prompt-bar@prompt-bar prompt-bar@prompt-bar-local; do
   claude plugin uninstall "$old" --scope user >/dev/null 2>&1 || true
 done
-for old in "$MARKET" prompt-bar prompt-bar-local; do
+for old in "$MARKET" ClauDiscombobulating prompt-bar prompt-bar-local; do
   claude plugin marketplace remove "$old" >/dev/null 2>&1 || true
 done
 
 if [ "${1:-}" = "--uninstall" ]; then
   set_autoupdate 0
-  echo "ClauDiscombobulating removed."
+  echo "ClauDiscobombulating removed."
   exit 0
 fi
 
 claude plugin marketplace add "$REPO"
 claude plugin install "$PLUGIN" --scope user
 set_autoupdate 1
-echo "ClauDiscombobulating installed. Restart Claude Code and the desktop app."
+echo "ClauDiscobombulating installed. Restart Claude Code and the desktop app."
 

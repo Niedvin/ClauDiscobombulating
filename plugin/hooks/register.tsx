@@ -13,10 +13,11 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_COLORS = ['#4f9cf0', '#3fbf8f', '#3fbf8f', '#3fbf8f', '#ef5b5b']
 const APPLY_MS = 700
 const UNREAD = '?'
-const PANE = 'ClauDiscombobulating'
+const PANE = 'ClauDiscobombulating'
 const PANE_COLS = 24
 const STACK_ROWS = 21
-const CARDS_ROWS = 7 + 1 + STACK_ROWS
+// the 4+1 before the timer is the name header (4 rows) plus its gap — 2026-10-11
+const CARDS_ROWS = 4 + 1 + 7 + 1 + STACK_ROWS
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
@@ -26,7 +27,7 @@ const ALERT_MIN = 10
 const AUTO_COMPACT_AT = 99
 const COMPACT_GRACE_MS = 600000
 const COMPACT_QUIET_MSGS = 5
-const ALERT_TITLE = 'ClauDiscombobulating'
+const ALERT_TITLE = 'ClauDiscobombulating'
 // no double quotes: argv reaches powershell.exe as one command line — 2026-10-06
 const ALERT_PS = `$ErrorActionPreference='Stop';Add-Type -AssemblyName PresentationCore;$p=New-Object System.Windows.Media.MediaPlayer;$p.Open([uri]$env:PB_SOUND);$p.Play();[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime];$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml('<toast><visual><binding template=''ToastGeneric''><text>'+$env:PB_TITLE+'</text><text>'+$env:PB_BODY+'</text></binding></visual><audio silent=''true''/></toast>');[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x));Start-Sleep -Seconds 5`
 
@@ -80,23 +81,23 @@ const EN: typeof UK = {
 }
 let tr = EN
 
-const limits = atom({ plugin: 'ClauDiscombobulating', key: 'limits' } as const, [] as Limit[])
-const live = atom({ plugin: 'ClauDiscombobulating', key: 'live' } as const, { model: '', effort: '' } as Live)
-const pending = atom({ plugin: 'ClauDiscombobulating', key: 'pending' } as const, { model: '', effort: '' } as Pending)
-const flag = atom({ plugin: 'ClauDiscombobulating', key: 'flag' } as const, UNREAD)
-const paneUp = atom({ plugin: 'ClauDiscombobulating', key: 'paneUp' } as const, false)
-const timer = atom({ plugin: 'ClauDiscombobulating', key: 'timer' } as const, { at: 0, text: UK.defaultText } as Alarm)
-const draft = atom({ plugin: 'ClauDiscombobulating', key: 'draft' } as const, { h: 0, m: 0, isSet: false } as Draft)
-const showResetAt = atom({ plugin: 'ClauDiscombobulating', key: 'showResetAt' } as const, false)
-const cacheLeft = atom({ plugin: 'ClauDiscombobulating', key: 'cacheLeft' } as const, -1)
-const activeAt = atom({ plugin: 'ClauDiscombobulating', key: 'activeAt' } as const, 0)
-const alerted = atom({ plugin: 'ClauDiscombobulating', key: 'alerted' } as const, 0)
+const limits = atom({ plugin: 'ClauDiscobombulating', key: 'limits' } as const, [] as Limit[])
+const live = atom({ plugin: 'ClauDiscobombulating', key: 'live' } as const, { model: '', effort: '' } as Live)
+const pending = atom({ plugin: 'ClauDiscobombulating', key: 'pending' } as const, { model: '', effort: '' } as Pending)
+const flag = atom({ plugin: 'ClauDiscobombulating', key: 'flag' } as const, UNREAD)
+const paneUp = atom({ plugin: 'ClauDiscobombulating', key: 'paneUp' } as const, false)
+const timer = atom({ plugin: 'ClauDiscobombulating', key: 'timer' } as const, { at: 0, text: UK.defaultText } as Alarm)
+const draft = atom({ plugin: 'ClauDiscobombulating', key: 'draft' } as const, { h: 0, m: 0, isSet: false } as Draft)
+const showResetAt = atom({ plugin: 'ClauDiscobombulating', key: 'showResetAt' } as const, false)
+const cacheLeft = atom({ plugin: 'ClauDiscobombulating', key: 'cacheLeft' } as const, -1)
+const activeAt = atom({ plugin: 'ClauDiscobombulating', key: 'activeAt' } as const, 0)
+const alerted = atom({ plugin: 'ClauDiscobombulating', key: 'alerted' } as const, 0)
 // persisted per 5h window so a reload at 99% does not compact twice — 2026-10-06
-const compactedFor = atom({ plugin: 'ClauDiscombobulating', key: 'compactedFor' } as const, '')
-const compactedAt = atom({ plugin: 'ClauDiscombobulating', key: 'compactedAt' } as const, 0)
-const sinceCompact = atom({ plugin: 'ClauDiscombobulating', key: 'sinceCompact' } as const, COMPACT_QUIET_MSGS)
-const context = atom({ plugin: 'ClauDiscombobulating', key: 'context' } as const, { tokens: 0, window: 0, percent: -1 } as Context)
-const log = atom({ plugin: 'ClauDiscombobulating', key: 'log' } as const, [] as string[])
+const compactedFor = atom({ plugin: 'ClauDiscobombulating', key: 'compactedFor' } as const, '')
+const compactedAt = atom({ plugin: 'ClauDiscobombulating', key: 'compactedAt' } as const, 0)
+const sinceCompact = atom({ plugin: 'ClauDiscobombulating', key: 'sinceCompact' } as const, COMPACT_QUIET_MSGS)
+const context = atom({ plugin: 'ClauDiscobombulating', key: 'context' } as const, { tokens: 0, window: 0, percent: -1 } as Context)
+const log = atom({ plugin: 'ClauDiscobombulating', key: 'log' } as const, [] as string[])
 
 const modelIndex = (id: string) => MODELS.findIndex(m => id.toLowerCase().includes(m.family))
 const labels: Record<string, string> = {}
@@ -130,7 +131,7 @@ async function note($: EngineInterface, line: string) {
   await update($, log, l => [...l.slice(-29), `${t} ${line}`])
   try {
     const home = await homeDir($)
-    if (home) await $.fs.write(`${home}/.claude/mods/ClauDiscombobulating-debug.log`, (await read($, log)).join(String.fromCharCode(10)))
+    if (home) await $.fs.write(`${home}/.claude/mods/ClauDiscobombulating-debug.log`, (await read($, log)).join(String.fromCharCode(10)))
   } catch {}
 }
 
@@ -142,7 +143,7 @@ async function countSinceCompact($: EngineInterface) {
 type SavedSettings = { effortLevel?: unknown; modelSettings?: Record<string, { effortLevel?: unknown }> }
 
 async function openPane($: EngineInterface, why: string) {
-  const r = await $.ui.open({ id: PANE, title: 'ClauDiscombobulating', columns: PANE_COLS })
+  const r = await $.ui.open({ id: PANE, title: 'ClauDiscobombulating', columns: PANE_COLS })
   await note($, `open pane (${why}) → ${JSON.stringify(r)}`)
 }
 
@@ -173,7 +174,7 @@ const firstTag = (out: string) => /[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]+)?/.exec(out)
 // LANG is set by Git Bash on Windows, so there the display language wins; unknown → English — 2026-10-06
 async function detectUk($: EngineInterface) {
   const none = () => undefined
-  const forced = await $.env.get('CLAUDISCOMBOBULATING_LANG').catch(none)
+  const forced = await $.env.get('CLAUDISCOBOMBULATING_LANG').catch(none)
   if (forced) return UK_TAG.test(forced)
   const isWin = (await $.env.get('OS').catch(none)) === 'Windows_NT'
   if (!isWin) {
@@ -425,7 +426,7 @@ type Shared = { at: number; limits: Limit[] }
 // each session hears only its own API replies; the store carries the freshest to the rest — 2026-10-02
 async function sharedPath($: EngineInterface) {
   const home = await homeDir($)
-  return home ? `${home}/.claude/mods/ClauDiscombobulating-limits.json` : undefined
+  return home ? `${home}/.claude/mods/ClauDiscobombulating-limits.json` : undefined
 }
 
 async function shareLimits($: EngineInterface, ls: Limit[]) {
@@ -458,10 +459,10 @@ async function applyModel($: EngineInterface) {
     try {
       const r = await $.command.run({ command: 'model', args: p.model })
       const text = r.text ?? ''
-      if (!/Set model to|Kept model as/.test(text)) $.ui.toast(text.slice(0, 160) || `ClauDiscombobulating: /model ${p.model} failed`)
+      if (!/Set model to|Kept model as/.test(text)) $.ui.toast(text.slice(0, 160) || `ClauDiscobombulating: /model ${p.model} failed`)
       await note($, `/model ${p.model} → ${text.slice(0, 90)}`)
     } catch (err) {
-      $.ui.toast(`ClauDiscombobulating: /model ${p.model} failed`)
+      $.ui.toast(`ClauDiscobombulating: /model ${p.model} failed`)
       await note($, `/model failed ${String(err)}`)
     }
     const model = await $.session.model()
@@ -486,7 +487,7 @@ async function applyEffort($: EngineInterface) {
       else $.ui.toast(text.slice(0, 160))
       await note($, `/effort ${p.effort} → ${text.slice(0, 90)}`)
     } catch (err) {
-      $.ui.toast(`ClauDiscombobulating: /effort ${p.effort} failed`)
+      $.ui.toast(`ClauDiscobombulating: /effort ${p.effort} failed`)
       await note($, `/effort failed ${String(err)}`)
     }
   }
@@ -534,10 +535,25 @@ const onCommand: Hook<'command.run'> = async ($, e, next) => {
 }
 
 // the desktop app drives the CLI headless: session.start says surface null, the app shows up later as an attach — 2026-10-06
+let pluginVersion = '?'
+// manifest, so a version bump never drifts from the header — 2026-10-11
+async function loadVersion($: EngineInterface) {
+  for (const p of [`${$.plugin.root}/.claude-plugin/plugin.json`, `${$.plugin.root}/plugin.json`]) {
+    try {
+      const m = JSON.parse(await $.fs.read(p)) as { version?: unknown }
+      if (typeof m.version === 'string') {
+        pluginVersion = m.version
+        return
+      }
+    } catch {}
+  }
+}
+
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
-  await $.command.register({ name: 'ClauDiscombobulating', description: 'Open the model and effort pane' })
+  await loadVersion($).catch(() => undefined)
+  await $.command.register({ name: 'ClauDiscobombulating', description: 'Open the model and effort pane' })
   await openPane($, why)
   for (const m of MODELS) {
     const v = await $.store.get(`label:${m.family}`).catch(() => undefined)
@@ -546,7 +562,7 @@ async function enableFull($: EngineInterface, why: string) {
   await poll($)
   await $.tool.register({
     name: 'probe',
-    description: 'ClauDiscombobulating diagnostics: model and effort as the engine and the app hold them, render metrics, recent events.',
+    description: 'ClauDiscobombulating diagnostics: model and effort as the engine and the app hold them, render metrics, recent events.',
     inputSchema: { type: 'object', properties: {} },
   })
 }
@@ -652,7 +668,7 @@ export const register: Register = on => {
   on('command.run', { command: 'effort' }, onCommand)
   on('command.run', { command: 'model' }, onCommand)
 
-  on('tool.call', { tool: 'mcp__ClauDiscombobulating__probe' }, async $ => {
+  on('tool.call', { tool: 'mcp__ClauDiscobombulating__probe' }, async $ => {
     try {
       const merged = (await $.settings.read()) as { effortLevel?: unknown; model?: unknown }
       const fromApp = (await $.settings.read({ source: 'flag' })) as { effortLevel?: unknown; model?: unknown }
@@ -774,8 +790,8 @@ export const register: Register = on => {
     return <Text dimColor>{`${e.props.hint}${e.props.hint ? '  ·  ' : ''}${label}`}</Text>
   })
 
-  on('command.run', { command: 'ClauDiscombobulating' }, async $ => {
-    const opened = await $.ui.open({ id: PANE, title: 'ClauDiscombobulating', columns: PANE_COLS })
+  on('command.run', { command: 'ClauDiscobombulating' }, async $ => {
+    const opened = await $.ui.open({ id: PANE, title: 'ClauDiscobombulating', columns: PANE_COLS })
     return { text: opened.isPlaced ? tr.paneOpen : tr.paneWaits }
   })
 
@@ -810,7 +826,8 @@ export const register: Register = on => {
     const rows = e.props.scroll.bodyRows
     const height = Math.max(rows, CARDS_ROWS)
     const stack = height - STACK_ROWS
-    paneRows = { timer: [0, 6], model: [stack + 12, stack + 15], effort: [stack + 17, stack + 20] }
+    // the timer follows the 4-row header and its 1-row gap — 2026-10-11
+    paneRows = { timer: [5, 11], model: [stack + 12, stack + 15], effort: [stack + 17, stack + 20] }
     paneWidth = width
     const alarm = await read($, timer)
     const d = await shownDraft($)
@@ -820,25 +837,34 @@ export const register: Register = on => {
     const mm = at ? at.getMinutes() : d.m
     return (
       <Box flexDirection="column" width={width} height={height} backgroundColor="black" justifyContent="space-between">
-        <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} backgroundColor="black" width={width}>
-          <Text bold color={isArmed ? '#f0b429' : '#ececf1'}>
-            ⏰ {two(hh)} : {two(mm)}
-          </Text>
-          <Text color="#3a3a48">{'─'.repeat(Math.max(4, width - 4))}</Text>
-          {isArmed ? (
-            <Text color="#9a9aab" wrap="truncate-end">
-              «{alarm.text}» · {tr.via} {inFor(alarm.at - Date.now())}
+        <Box flexDirection="column" width={width}>
+          <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor="#6c6c7c" backgroundColor="black" width={width}>
+            <Text bold color="#ececf1">
+              {$.plugin.name}
             </Text>
-          ) : (
-            <Input key="timer-text" placeholder={tr.placeholder} submitLabel="" value={alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text })); await armTimer($) }} />
-          )}
-          <Text color="#3a3a48">{'─'.repeat(Math.max(4, width - 4))}</Text>
-          <Box flexDirection="row" justifyContent="center">
+            <Text dimColor>{`v${pluginVersion}`}</Text>
+          </Box>
+          <Box height={1} />
+          <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} backgroundColor="black" width={width}>
+            <Text bold color={isArmed ? '#f0b429' : '#ececf1'}>
+              ⏰ {two(hh)} : {two(mm)}
+            </Text>
+            <Text color="#3a3a48">{'─'.repeat(Math.max(4, width - 4))}</Text>
             {isArmed ? (
-              <Button key="timer-cancel" plain label={tr.cancelBtn} onPress={() => update($, timer, t => ({ ...t, at: 0 }))} />
+              <Text color="#9a9aab" wrap="truncate-end">
+                «{alarm.text}» · {tr.via} {inFor(alarm.at - Date.now())}
+              </Text>
             ) : (
-              <Button key="timer-arm" plain label={tr.sendBtn} onPress={() => armTimer($)} />
+              <Input key="timer-text" placeholder={tr.placeholder} submitLabel="" value={alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text })); await armTimer($) }} />
             )}
+            <Text color="#3a3a48">{'─'.repeat(Math.max(4, width - 4))}</Text>
+            <Box flexDirection="row" justifyContent="center">
+              {isArmed ? (
+                <Button key="timer-cancel" plain label={tr.cancelBtn} onPress={() => update($, timer, t => ({ ...t, at: 0 }))} />
+              ) : (
+                <Button key="timer-arm" plain label={tr.sendBtn} onPress={() => armTimer($)} />
+              )}
+            </Box>
           </Box>
         </Box>
         <Box flexDirection="column" width={width}>

@@ -1,4 +1,4 @@
-# ClauDiscombobulating
+# ClauDiscobombulating
 
 Claude Code mod. One plugin, mode by surface:
 
@@ -11,7 +11,7 @@ Switch: `isFull` (set by `enableFull`). Desktop app runs the CLI headless: `sess
 
 - `install.sh` — macOS/Linux installer, GitHub copy only (`curl … | bash`, `--uninstall`). Same auto-update write as `install.ps1`.
 - `install.ps1` — installer. `.\install.ps1` / `-Uninstall` / `-WhatIf`. User scope, covers console + desktop.
-- `.claude-plugin/marketplace.json` — marketplace `ClauDiscombobulating`, plugin at `./plugin`. Repo: github.com/Niedvin/ClauDiscombobulating (public).
+- `.claude-plugin/marketplace.json` — marketplace `ClauDiscobombulating`, plugin at `./plugin`. Repo: github.com/Niedvin/ClauDiscobombulating (public).
 - `plugin/.claude-plugin/plugin.json` — manifest. Bump version on every release (auto-update keys on it).
 - `plugin/assets/cache-alert.mp3` — alert sound. Original `cache alert.mp3` in root is git-ignored.
 - `plugin/hooks/register.tsx` — whole mod. `hooks.json` points to it.
@@ -22,15 +22,15 @@ Switch: `isFull` (set by `enableFull`). Desktop app runs the CLI headless: `sess
 ## Dev loop
 
 - Edit here (not under `~/.claude`: protected path, bypass mode does not cover it).
-- Hot reload: copy `plugin/hooks`, `plugin.json` to `~/.claude/dev-mods/<session-id>/ClauDiscombobulating/`.
+- Hot reload: copy `plugin/hooks`, `plugin.json` to `~/.claude/dev-mods/<session-id>/ClauDiscobombulating/`.
 - Ship: `.\install.ps1` (reinstalls), restart apps.
 - Test installer without touching real config: set `CLAUDE_CONFIG_DIR` to a temp dir first.
 
 ## Pane (terminal, 24 cols)
 
-Timer pinned top (rows 0..6). Bottom stack anchored down, order: Sessions, Resume, Compact, model, effort: bordered round cards, 1 row gap between each.
+Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version comes from `plugin.json`, read at the first `enableFull`. Bottom stack anchored down, order: Sessions, Resume, Compact, model, effort: bordered round cards, 1 row gap between each.
 
-- Change a block → update `STACK_ROWS` + `paneRows` offsets in `ui.render` Pane. Wheel hit-test uses them.
+- Change a block → update `STACK_ROWS`/`CARDS_ROWS` + `paneRows` offsets in `ui.render` Pane. Wheel hit-test uses them.
 - Cells only: no half-row gap. Tried 0 gap (merged) and flat 1-row filled buttons (too small); user wants bordered buttons, 1 row gap.
 - **Sessions** = `/resume` slash command (session picker).
 - **Resume** = submit prompt as user. Terminal: `--resume`. Other surfaces: `continue`. Before send: `cacheMinutes() === 0` (idle ≥ 1h, `CACHE_TTL_MS`) → `$.ui.ask` "Cache miss… continue?"; no → nothing sent.
@@ -42,8 +42,8 @@ Timer pinned top (rows 0..6). Bottom stack anchored down, order: Sessions, Resum
 
 ## Runtime files
 
-- `~/.claude/mods/ClauDiscombobulating-limits.json` — limits shared between sessions.
-- `~/.claude/mods/ClauDiscombobulating-debug.log` — event log (console only).
+- `~/.claude/mods/ClauDiscobombulating-limits.json` — limits shared between sessions.
+- `~/.claude/mods/ClauDiscobombulating-debug.log` — event log (console only).
 
 ## Gotchas
 
@@ -61,7 +61,7 @@ Timer pinned top (rows 0..6). Bottom stack anchored down, order: Sessions, Resum
 
 ## Auto-update from GitHub
 
-Published as marketplace `ClauDiscombobulating` (repo root has `.claude-plugin/marketplace.json`). Users: `.\install.ps1 -Repo Niedvin/ClauDiscombobulating` — also writes `extraKnownMarketplaces.ClauDiscombobulating` (github source, `autoUpdate: true`) into `settings.json` (backup in `.backups/`); `-Uninstall` removes it. Local install leaves settings alone.
+Published as marketplace `ClauDiscobombulating` (repo root has `.claude-plugin/marketplace.json`). Users: `.\install.ps1 -Repo Niedvin/ClauDiscobombulating` — also writes `extraKnownMarketplaces.ClauDiscobombulating` (github source, `autoUpdate: true`) into `settings.json` (backup in `.backups/`); `-Uninstall` removes it. Local install leaves settings alone.
 
 Release: bump `version` in `plugin.json`, commit, push. Installed copies pull it.
 
