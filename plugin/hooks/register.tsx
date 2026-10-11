@@ -37,6 +37,44 @@ const ALERT_TITLE = 'ClauDiscobombulating'
 // no double quotes: argv reaches powershell.exe as one command line — 2026-10-06
 const ALERT_PS = `$ErrorActionPreference='Stop';Add-Type -AssemblyName PresentationCore;$p=New-Object System.Windows.Media.MediaPlayer;$p.Open([uri]$env:PB_SOUND);$p.Play();[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime];$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml('<toast><visual><binding template=''ToastGeneric''><text>'+$env:PB_TITLE+'</text><text>'+$env:PB_BODY+'</text></binding></visual><audio silent=''true''/></toast>');[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x));Start-Sleep -Seconds 5`
 
+// the pane the mod opens itself waits undrawn below the dock threshold; the console window grows to fit it — 2026-10-12
+// WT refuses a resize made from outside the app, classic consoles take this one; the app-side check decides either way
+const WIDEN_CS = `using System;
+using System.Runtime.InteropServices;
+public class W {
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr templ);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSI info);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleScreenBufferSize(IntPtr h, COORD size);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleWindowInfo(IntPtr h, bool absolute, ref RECT rect);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
+  [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public short Left; public short Top; public short Right; public short Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct CSI { public COORD Size; public COORD Cursor; public ushort Attrs; public RECT Window; public COORD Max; }
+}`
+
+// hex literals parse as negative ints in PowerShell and the uint parameters refuse them; single quotes only, the argv keeps them — 2026-10-12
+const WIDEN_PS =
+  `$ErrorActionPreference='SilentlyContinue';Add-Type -TypeDefinition $env:CDB_CS;` +
+  `[W]::AttachConsole([uint32]::MaxValue)|Out-Null;` +
+  `$h=[W]::CreateFileW('CONOUT$',[uint32]3221225472,[uint32]3,[IntPtr]::Zero,[uint32]3,[uint32]0,[IntPtr]::Zero);` +
+  `$hv=0;try{$hv=$h.ToInt64()}catch{};` +
+  `if($hv -gt 0){$i=New-Object 'W+CSI';` +
+  `if([W]::GetConsoleScreenBufferInfo($h,[ref]$i)){` +
+  `$rows=$i.Window.Bottom-$i.Window.Top+1;$cols=$i.Window.Right-$i.Window.Left+1;$t=[int]$env:CDB_WIDEN;` +
+  `if($t -gt 0 -and $cols -lt $t){` +
+  `$b=New-Object 'W+COORD';$b.X=[int16]$t;$b.Y=$i.Size.Y;` +
+  `[W]::SetConsoleScreenBufferSize($h,$b)|Out-Null;` +
+  `$r=New-Object 'W+RECT';$r.Left=0;$r.Top=0;$r.Right=[int16]($t-1);$r.Bottom=[int16]($rows-1);` +
+  `[W]::SetConsoleWindowInfo($h,$true,[ref]$r)|Out-Null}}};` +
+  `[W]::CloseHandle($h)|Out-Null`
+
+// the dock places the pane from 110 cols once the person asked for it, from 144 when the mod opens it on its own — 2026-10-12
+const WIDEN_TARGETS = [110, 144]
+const WIDEN_WAIT_MS = 1200
+const GROW_GAP_MS = 10000
+const GROW_MAX = 3
+
 const UK = {
   defaultText: 'продовжуй',
   yes: 'Продовжити',
@@ -178,6 +216,36 @@ type SavedSettings = { effortLevel?: unknown; modelSettings?: Record<string, { e
 async function openPane($: EngineInterface, why: string) {
   const r = await $.ui.open({ id: PANE, title: 'ClauDiscobombulating', columns: PANE_COLS })
   await note($, `open pane (${why}) → ${JSON.stringify(r)}`)
+  return r
+}
+
+let growTries = 0
+let growAt = 0
+
+async function widenConsole($: EngineInterface, cols: number) {
+  const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIDEN_PS]
+  await $.process.run(argv, { env: { CDB_CS: WIDEN_CS, CDB_WIDEN: String(cols) }, timeoutMs: 10000 }).catch(err => note($, `widen failed ${String(err)}`))
+}
+
+// grows the console to the smallest width that shows the pane, then checks the engine placed it — 2026-10-12
+async function fitPane($: EngineInterface): Promise<boolean> {
+  if (!isFull || growTries >= GROW_MAX) return false
+  if ((await $.env.get('OS').catch(() => undefined)) !== 'Windows_NT') return false
+  const now = await $.clock.now()
+  if (now - growAt < GROW_GAP_MS) return false
+  growAt = now
+  growTries++
+  for (const cols of WIDEN_TARGETS) {
+    await widenConsole($, cols)
+    await new Promise<void>(r => $.clock.after(WIDEN_WAIT_MS, () => r()))
+    const placed = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced)
+    if (placed) {
+      await note($, `pane placed after widening to ${cols}`)
+      return true
+    }
+  }
+  await note($, 'pane waits: the terminal refused the widen')
+  return false
 }
 
 async function savedEffort($: EngineInterface, model: string) {
@@ -442,8 +510,11 @@ async function poll($: EngineInterface) {
     if (!isFull) return
     const m = Math.floor(tick / 60000)
     if (m !== (await read($, minute))) await update($, minute, () => m)
-    const up = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced && x.isShown)
+    const panes = await $.ui.panes().catch(() => [])
+    const up = panes.some(x => x.id === PANE && x.isPlaced && x.isShown)
     if (up !== (await read($, paneUp))) await update($, paneUp, () => up)
+    // an open pane the terminal cannot place: ask for the width again, throttled and capped — 2026-10-12
+    if (!up && panes.some(x => x.id === PANE)) void fitPane($).catch(err => note($, `fit failed ${String(err)}`))
     const model = await $.session.model()
     const raw = ((await $.settings.read({ source: 'flag' })) as { effortLevel?: unknown }).effortLevel
     const flagEffort = typeof raw === 'string' ? raw : ''
@@ -852,7 +923,10 @@ async function enableFull($: EngineInterface, why: string) {
   await loadVersion($).catch(() => undefined)
   void checkVersion($).catch(() => undefined)
   await $.command.register({ name: 'ClauDiscobombulating', description: 'Open the model and effort pane' })
-  await openPane($, why)
+  const opened = await openPane($, why)
+  // the pane the mod opens on its own waits below the dock threshold: grow the console to fit it — 2026-10-12
+  growTries = 0
+  if (!opened.isPlaced) void fitPane($)
   for (const m of MODELS) {
     const v = await $.store.get(`label:${m.family}`).catch(() => undefined)
     if (typeof v === 'string') labels[m.family] = v

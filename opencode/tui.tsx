@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { Renderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { spawn } from "node:child_process"
 import { readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -31,6 +31,12 @@ const WHEEL_GAP_MS = 80
 // opencode's own session sidebar: 42 wide, shown above 120 columns — 2026-10-11
 const SIDEBAR_W = 42
 const SIDEBAR_FROM = 120
+// a missing panel on a narrow terminal asks the terminal to grow: CSI 8 h;w t — 2026-10-12
+const WIDEN_STEP = 20
+const WIDEN_MAX = 200
+const WIDEN_TRIES = 5
+const WIDEN_EVERY_MS = 3000
+const SEEN_FRESH_MS = 4000
 
 const UK = {
   defaultText: "продовжуй",
@@ -298,6 +304,13 @@ function setup(context: Ctx) {
     .catch(() => undefined)
 
   let polled = 0
+  let seenAt = Date.now()
+  let triedAt = 0
+  let triedCols = -1
+  let tries = 0
+  // opentui's own view of the terminal beats process.stdout, which bun may leave undefined — 2026-10-12
+  let termCols = process.stdout.columns ?? 0
+  let termRows = process.stdout.rows ?? 30
   function tick() {
     const t = Date.now()
     setNow(t)
@@ -313,6 +326,22 @@ function setup(context: Ctx) {
       })
       if (timer.sessionID) void send(timer.sessionID, timer.text || tr().defaultText)
     }
+    const cols = termCols
+    // a terminal takes a resize only from the app's own stdout, and only the panel proves it landed — 2026-10-12
+    if (cols !== triedCols) {
+      triedCols = cols
+      tries = 0
+    }
+    try {
+      const route = ui.router.current()?.type
+      const wantsPanel = route === "home" || route === "session"
+      if (wantsPanel && cols > 0 && cols < WIDEN_MAX && t - seenAt > SEEN_FRESH_MS && tries < WIDEN_TRIES && t - triedAt >= WIDEN_EVERY_MS) {
+        tries++
+        triedAt = t
+        const target = Math.min(WIDEN_MAX, Math.max(cols + WIDEN_STEP, SIDEBAR_FROM + 2))
+        process.stdout.write(`\x1b[8;${termRows};${target}t`)
+      }
+    } catch {}
   }
   tick()
   const every = setInterval(tick, 1000)
@@ -342,6 +371,12 @@ function setup(context: Ctx) {
 
   function Section(p: { sessionID?: string }) {
     const sid = () => p.sessionID ?? ""
+    // the panel is up while this runs: a heartbeat the widen reads as its silence — 2026-10-12
+    onMount(() => {
+      seenAt = Date.now()
+      const beat = setInterval(() => (seenAt = Date.now()), 1000)
+      onCleanup(() => clearInterval(beat))
+    })
     const variants = createMemo(() => ui.model.variant.list())
     const variant = createMemo(() => ui.model.current()?.variant)
     const hue = createMemo(() => effortHue(variant()) ?? theme.border.base)
@@ -522,6 +557,10 @@ function setup(context: Ctx) {
 
   function Home() {
     const dims = useTerminalDimensions()
+    createEffect(() => {
+      termCols = dims().width
+      termRows = dims().height
+    })
     return (
       <Show when={ui.router.current().type === "home" && dims().width > SIDEBAR_FROM}>
         <Beside />
