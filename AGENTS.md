@@ -5,7 +5,7 @@ Claude Code mod. One plugin, mode by surface:
 - **Console (terminal)**: full. Limits + cache timer in footer, model/effort pickers above prompt, side pane (timer, Sessions, Resume, Compact, model, effort).
 - **Claude desktop**: lean. Limits + cache timer only, in a band above the prompt (`AbovePrompt`). No pickers, no pane, no commands, no timer. Footer (`SessionMode`) passes through: its slot is ≈220 px and clips.
 
-Switch: `isFull` (set by `enableFull`). Desktop app runs the CLI headless: `session.start` surface is `null`, app arrives later as `session.attach` `desktop`. So: start with terminal/other surface → full; attach `desktop` → lean. Never branch on `e.surface === 'desktop'` at start. Render hooks gate on their own `e.surface`.
+Switch: `isFull` (set by `enableFull`) and its atom `full` — draws read the atom, so a band mounted before `enableFull` redraws. Desktop app runs the CLI headless: `session.start` surface is `null`, app arrives later as `session.attach` `desktop`. So: start with terminal/other surface → full; attach `desktop` → lean. Never branch on `e.surface === 'desktop'` at start. Render hooks gate on their own `e.surface`.
 
 ## Layout
 
@@ -18,6 +18,7 @@ Switch: `isFull` (set by `enableFull`). Desktop app runs the CLI headless: `sess
 - `plugin/types/index.d.ts` — `$.state` contract. New state key → declare here.
 - `plugin/hooks/*.test.tsx` — tests. `claude plugin test plugin`, `claude plugin validate plugin`.
 - `plugin/.claude-plugin/types/` — engine-generated, git-ignored. Never edit.
+- `opencode/tui.tsx` — opencode TUI plugin, one file. Installed with `plugin.json` next to it (version source).
 
 ## Dev loop
 
@@ -38,8 +39,8 @@ Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version 
 - Cache hint: console hides it first 5 min idle (`CACHE_SHOW_BELOW`) in the `SessionMode` footer; desktop shows it always in the `AbovePrompt` band (flat dark pills, Box + Text, Compact button, cache pill on the right; `Svg` drew nothing in the footer slot). Then minutes left, then `⚠ Cache Miss`.
 - Cache alert: `left <= ALERT_MIN` (10), once per idle period (`alerted` state). In-app toast + Windows toast + `cache-alert.mp3` via `powershell.exe` (`ALERT_PS`, env-passed text, no double quotes in it). `lastActive` persists in `activeAt` state (survives reload), is restored on resume from `classic.SessionStart` `seconds_since_last_response`, and restarts at every real compaction.
 
-- Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`, else a 5h wall bucket). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after.
-- ctrl+t cycles effort: band ◀/▶ carry engine actions `pane:previous`/`pane:next` (the engine takes them only with 2+ panes open); the chord lives in the person's `~/.claude/keybindings.json` — 2026-10-11.
+- Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`, else a 5h wall bucket). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after. Skipped when `five_hour` resets in < 59 min (`NO_COMPACT_BEFORE_RESET_MS`).
+- ctrl+t cycles effort: band ◀/▶ and the pane's effort card ◀/▶ (keys `e-prev`/`e-next`) carry engine actions `pane:previous`/`pane:next`; the band hides its picker while the pane is open, so the pane must carry them too. The engine's own handler for those actions runs only with 2+ panes open. The chord lives in the person's `~/.claude/keybindings.json`.
 - New version: header compares `pluginVersion` with `latest` (GitHub raw, checked at session start); the click runs `claude plugin update`, restart applies — 2026-10-11.
 
 ## Runtime files
@@ -67,3 +68,12 @@ Published as marketplace `ClauDiscobombulating` (repo root has `.claude-plugin/m
 
 Release: bump `version` in `plugin.json`, commit (`release: X.Y.Z`), push, then `gh release create vX.Y.Z --title "ClauDiscobombulating X.Y.Z" --generate-notes` — one GitHub release per shipped version. Installed copies pull it.
 
+## opencode plugin
+
+- Loads from `<XDG_CONFIG_HOME or ~/.config>/opencode/plugins/claudiscobombulating/tui.tsx` (auto-discovered, no package.json) or a project's `.opencode/plugins/<name>/`. `opencode plugin list` shows it. Local sources hot-reload.
+- API: `Plugin.define({ id, setup })` from `@opencode/plugin/tui`; blocks go in `ui.slot({ append: "sidebar.content" })`. Runtime gives solid-js, `@opentui/solid`, `@opentui/core`, node builtins.
+- No rate-limit data in opencode: limits come from `~/.claude/mods/ClauDiscobombulating-limits.json` (Claude Code side writes it). Auto compact only for provider `anthropic`, same 99% / 59 min / once per window rules.
+- Effort = model variant (`ui.model.variant`); `ctrl+t` is opencode's own `variant.cycle`.
+- Self-update: header `new vX` → fetch raw `opencode/tui.tsx` + `plugin/.claude-plugin/plugin.json` from `main`, temp write, rename. So both files on `main` must stay in step with the release.
+- UI strings: `UK`/`EN` in `tui.tsx`, same rule as the Claude side.
+- Type-check: copy to `src/tui.tsx` of a scratch npm project (`@opencode/plugin`, `@opencode/theme`, `@opentui/core`, `@opentui/solid`, `solid-js`, `@types/bun`, `@types/node`, `typescript`; tsconfig `jsx: preserve`, `jsxImportSource: @opentui/solid`), `npx tsc -p .`. Live test: a project dir with `.opencode/plugins/claudiscobombulating/`, `opencode --session <id> <dir>` in a PTY; remove test sessions after (`opencode api session.remove --param sessionID=…`).
