@@ -15,6 +15,7 @@ Switch: `isFull` (set by `enableFull`) and its atom `full` — draws read the at
 - `plugin/.claude-plugin/plugin.json` — manifest. Bump version on every release (auto-update keys on it).
 - `plugin/assets/cache-alert.mp3` — alert sound. Original `cache alert.mp3` in root is git-ignored.
 - `plugin/hooks/register.tsx` — whole mod. `hooks.json` points to it.
+- `plugin/hooks/dance.ts` — Clawd dance scene, pure: `danceCells(columns, rows, t)` → Raster cells.
 - `plugin/types/index.d.ts` — `$.state` contract. New state key → declare here.
 - `plugin/hooks/*.test.tsx` — tests. `claude plugin test plugin`, `claude plugin validate plugin`.
 - `plugin/.claude-plugin/types/` — engine-generated, git-ignored. Never edit.
@@ -41,6 +42,8 @@ Same look as the opencode sidebar, packed from the top: name banner (bordered, n
 
 - Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`, else a 5h wall bucket). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after. Skipped when `five_hour` resets in < 59 min (`NO_COMPACT_BEFORE_RESET_MS`).
 - ctrl+t cycles effort: band ◀/▶ and the pane's effort card ◀/▶ (keys `e-prev`/`e-next`) carry engine actions `pane:previous`/`pane:next`; the band hides its picker while the pane is open, so the pane must carry them too. The engine's own handler for those actions runs only with 2+ panes open. The chord lives in the person's `~/.claude/keybindings.json`; `loadChord` reads the one bound to `pane:next` and both effort blocks show it as a hint (band: chord after ▶; pane: on the Effort box's bottom border, `ctrl+t змінити`).
+- Context counter: click toggles `countMode` (`$.store` key `countMode`). Live mode: target = last `usage()` tokens + streamed text/thinking/input estimate from `turn.step` chunks + user-role rows appended since (`session.append`: tool results, prompts, attachments; main loop only). A step's `stop` usage replaces them (input + output; rows appended after the request was sent stay pending). `counted` eases 1/6 of the gap every 50 ms, changed digits bold. Colour: pure yellow at 600k, pure red at 900k.
+- Clawd dance: click on the banner name (key `name`) → `dance` state = start ms; for 15 s (`DANCE_MS`) the pane is one `Raster` (key `dance`) with the banner drawn into it, frames by `$.ui.blit` every 40 ms. Bomb falls out of the pocket at `BOMB_AT` 12.5 s, blows at `BOOM_AT` 12.9 s: fire over the whole pane, black from ≈14.7 s. Then `reveal` 0→1 over `REVEAL_MS` fades the normal tree in (`fadeTree`). Raster ≤ visible body (`bodyRows - 1`, Box as tall as the raster): a taller tree scrolls a row and leaves a stale blitted row. Reload mid-dance resumes it. Floor neutral grey (user: colour tiles pulled the eye).
 - New version: header compares `pluginVersion` with `latest` (GitHub raw, checked at session start); the click runs `claude plugin update`, restart applies — 2026-10-11.
 
 ## Runtime files

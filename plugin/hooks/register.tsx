@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Hook, Register, Timer } from 'claude-code'
+import type { EngineInterface, Hook, Register, RenderElement, Timer, TurnStepChunk } from 'claude-code'
 
-import type { Context, Draft, Limit, Live, Pending, Timer as Alarm } from '../types'
+import type { Context, Counted, Draft, Limit, Live, Pending, Timer as Alarm } from '../types'
+import { DANCE_MS, REVEAL_MS, danceCells } from './dance'
+import type { Head } from './dance'
 
 // aliases: the engine resolves each to the newest model of the family — 2026-10-02
 const MODELS = [
@@ -28,6 +30,9 @@ const AUTO_COMPACT_AT = 99
 const NO_COMPACT_BEFORE_RESET_MS = 59 * 60000
 const COMPACT_GRACE_MS = 600000
 const COMPACT_QUIET_MSGS = 5
+const COUNT_FRAME_MS = 50
+const DANCE_FRAME_MS = 40
+const STAGE_MIN_ROWS = 12
 const ALERT_TITLE = 'ClauDiscobombulating'
 // no double quotes: argv reaches powershell.exe as one command line — 2026-10-06
 const ALERT_PS = `$ErrorActionPreference='Stop';Add-Type -AssemblyName PresentationCore;$p=New-Object System.Windows.Media.MediaPlayer;$p.Open([uri]$env:PB_SOUND);$p.Play();[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime];$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml('<toast><visual><binding template=''ToastGeneric''><text>'+$env:PB_TITLE+'</text><text>'+$env:PB_BODY+'</text></binding></visual><audio silent=''true''/></toast>');[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x));Start-Sleep -Seconds 5`
@@ -61,6 +66,8 @@ const UK = {
   effortHint: 'змінити',
   timer: 'Таймер',
   model: 'Модель',
+  sep: ' ',
+  boom: 'БАХ!',
 }
 const EN: typeof UK = {
   defaultText: 'continue',
@@ -91,6 +98,8 @@ const EN: typeof UK = {
   effortHint: 'to change',
   timer: 'Timer',
   model: 'Model',
+  sep: ',',
+  boom: 'BOOM!',
 }
 let tr = EN
 
@@ -115,6 +124,10 @@ const latest = atom({ plugin: 'ClauDiscobombulating', key: 'latest' } as const, 
 // the band reads this, not isFull: a draw that read no atom is never redrawn — 2026-10-11
 const full = atom({ plugin: 'ClauDiscobombulating', key: 'full' } as const, false)
 const minute = atom({ plugin: 'ClauDiscobombulating', key: 'minute' } as const, 0)
+const countMode = atom({ plugin: 'ClauDiscobombulating', key: 'countMode' } as const, false)
+const counted = atom({ plugin: 'ClauDiscobombulating', key: 'counted' } as const, { n: 0, prev: 0 } as Counted)
+const dance = atom({ plugin: 'ClauDiscobombulating', key: 'dance' } as const, 0)
+const reveal = atom({ plugin: 'ClauDiscobombulating', key: 'reveal' } as const, 1)
 
 const modelIndex = (id: string) => MODELS.findIndex(m => id.toLowerCase().includes(m.family))
 const labels: Record<string, string> = {}
@@ -191,6 +204,13 @@ const cacheText = (min: number) => (min <= 0 ? '⚠ Cache Miss' : `${tr.cache} $
 const cacheColor = (min: number) => (min <= 5 ? '#ef5b5b' : min <= 15 ? '#f0b429' : '#3fbf8f')
 const kTok = (n: number) => (n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`)
 const ctxLabel = (c: Context) => (c.window > 0 ? `${kTok(c.tokens)}/${kTok(c.window)}` : '')
+const grouped = (n: number) => String(Math.max(0, Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, tr.sep)
+
+// pure yellow at 600k, pure red from 900k: the user's pick — 2026-10-11
+function ctxColor(n: number, white = 0) {
+  const ch = (v: number) => Math.round(v + (255 - v) * white).toString(16).padStart(2, '0')
+  return `#${ch(255 * Math.min(1, n / 600000))}${ch(255 * (1 - Math.min(1, Math.max(0, n - 600000) / 300000)))}${ch(0)}`
+}
 
 // minutes until the 1h prompt cache lapses; -1 while a turn runs or before any turn — 2026-10-06
 function cacheMinutes(now: number) {
@@ -409,6 +429,8 @@ async function poll($: EngineInterface) {
       const fresh: Context = { tokens: c.tokens ?? 0, window: c.window ?? 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : c.tokens && c.window ? Math.round((c.tokens / c.window) * 100) : -1 }
       const seen = await read($, context)
       if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent) await update($, context, () => fresh)
+      measured(fresh.tokens)
+      kickCount($)
     }
     const now = Date.now()
     const ls = await read($, limits)
@@ -646,6 +668,165 @@ async function doUpdate($: EngineInterface) {
   }
 }
 
+let countOn = false
+let ctxKnown = 0
+let ctxStepIn = -1
+let ctxPolled = -1
+let ctxStreamed = 0
+let ctxPending = 0
+let shownN = 0
+let shownPrev = 0
+let isFraming = false
+let countTimer: Timer | undefined
+
+const ctxTarget = () => ctxKnown + Math.round(ctxStreamed + ctxPending)
+
+// ≈4 chars a token in English, ≈2 in Cyrillic; the step's stop chunk replaces the guess — 2026-10-11
+function estTokens(s: string) {
+  let n = 0
+  for (let i = 0; i < s.length; i++) n += s.charCodeAt(i) < 128 ? 0.25 : 0.5
+  return n
+}
+
+// `sent` = the pending rows this request carried: its usage counts them, later rows stay pending — 2026-10-11
+function countChunk(c: TurnStepChunk, sent: number) {
+  if (c.kind === 'text' || c.kind === 'thinking') ctxStreamed += estTokens(c.text)
+  else if (c.kind === 'input') ctxStreamed += estTokens(c.json)
+  else if (c.kind === 'stop' && c.usage) {
+    ctxStepIn = c.usage.input_tokens + c.usage.cache_read_input_tokens + c.usage.cache_creation_input_tokens
+    ctxKnown = ctxStepIn + c.usage.output_tokens
+    ctxStreamed = 0
+    ctxPending = Math.max(0, ctxPending - sent)
+  }
+}
+
+// an image costs ≈1600 tokens at the API's usual downscale — 2026-10-11
+function blockTokens(b: unknown): number {
+  const x = (b ?? {}) as { type?: unknown; text?: unknown; content?: unknown }
+  if (x.type === 'text' && typeof x.text === 'string') return estTokens(x.text)
+  if (x.type === 'image') return 1600
+  if (x.type !== 'tool_result') return 0
+  if (typeof x.content === 'string') return estTokens(x.content)
+  return Array.isArray(x.content) ? x.content.reduce((n: number, y) => n + blockTokens(y), 0) : 0
+}
+
+function measured(tokens: number) {
+  if (tokens === ctxPolled) return
+  ctxPolled = tokens
+  // usage() counts input only: the stop chunk already gave this request with its output — 2026-10-11
+  if (tokens === ctxStepIn) return
+  ctxKnown = tokens
+  ctxStreamed = 0
+  ctxPending = 0
+}
+
+function kickCount($: EngineInterface) {
+  if (countOn && !countTimer && (shownN !== ctxTarget() || shownPrev !== shownN)) countTimer = $.clock.every(COUNT_FRAME_MS, () => void countFrame($))
+}
+
+async function countFrame($: EngineInterface) {
+  if (isFraming) return
+  const to = ctxTarget()
+  if (!countOn || (shownN === to && shownPrev === to)) {
+    countTimer?.cancel()
+    countTimer = undefined
+    return
+  }
+  isFraming = true
+  try {
+    shownPrev = shownN
+    // a sixth of the gap a frame: a 20k jump rolls ≈2.5 s instead of snapping — 2026-10-11
+    if (shownN !== to) shownN += Math.sign(to - shownN) * Math.max(1, Math.ceil(Math.abs(to - shownN) / 6))
+    const next = { n: shownN, prev: shownPrev }
+    await update($, counted, () => next)
+  } finally {
+    isFraming = false
+  }
+}
+
+async function toggleCount($: EngineInterface) {
+  countOn = !(await read($, countMode))
+  await update($, countMode, () => countOn)
+  await $.store.set('countMode', countOn).catch(() => undefined)
+  shownN = shownPrev = 0
+  if (countOn) await update($, counted, () => ({ n: 0, prev: 0 }))
+  kickCount($)
+}
+
+let danceTimer: Timer | undefined
+let isBlitting = false
+let stage: { columns: number; rows: number; head?: Head } = { columns: 0, rows: 0 }
+
+async function startDance($: EngineInterface) {
+  if ((await read($, dance)) > 0) return
+  const at = await $.clock.now()
+  await update($, reveal, () => 0)
+  await update($, dance, () => at)
+  runDance($, at)
+}
+
+function runDance($: EngineInterface, at: number) {
+  danceTimer?.cancel()
+  danceTimer = $.clock.every(DANCE_FRAME_MS, () => void danceFrame($, at))
+}
+
+async function danceFrame($: EngineInterface, at: number) {
+  const t = (await $.clock.now()) - at
+  if (t >= DANCE_MS + REVEAL_MS) {
+    danceTimer?.cancel()
+    danceTimer = undefined
+    await update($, reveal, () => 1)
+    await update($, dance, d => (d === at ? 0 : d))
+    return
+  }
+  if (t >= DANCE_MS) {
+    const k = Math.max(0.02, Math.round(((t - DANCE_MS) / REVEAL_MS) * 50) / 50)
+    await update($, reveal, () => k)
+    return
+  }
+  if (isBlitting || !stage.rows) return
+  isBlitting = true
+  try {
+    await $.ui.blit({ requestId: PANE, key: 'dance', cells: danceCells(stage.columns, stage.rows, t / 1000, tr.boom, stage.head) })
+  } catch {
+  } finally {
+    isBlitting = false
+  }
+}
+
+const FG_RGB = 0xcccccc
+const DIM_RGB = 0x767676
+const NAMED_RGB: Record<string, number> = { black: 0x000000, gray: 0x808080, grey: 0x808080, white: 0xffffff }
+const rgbOf = (c: unknown, fallback: number) => (typeof c === 'string' ? (/^#[0-9a-f]{6}$/i.test(c) ? parseInt(c.slice(1), 16) : NAMED_RGB[c] ?? fallback) : fallback)
+const scaled = (c: number, k: number) => `#${[16, 8, 0].map(s => Math.round(((c >> s) & 255) * k).toString(16).padStart(2, '0')).join('')}`
+
+// fade-in after the dance: every colour scaled by k; Input takes no colour, so a Text stands in — 2026-10-11
+function fadeTree(node: unknown, k: number, inherit: number, text: (s: string, color: string) => unknown): unknown {
+  if (Array.isArray(node)) return node.map(n => fadeTree(n, k, inherit, text))
+  if (!node || typeof node !== 'object') return node
+  const el = node as { type: string; props?: Record<string, unknown>; children?: unknown }
+  const props = { ...(el.props ?? {}) }
+  let own = inherit
+  if (el.type === 'Input') return text(String(props.value || props.placeholder || ''), scaled(FG_RGB, k))
+  if (el.type === 'Box') {
+    if (props.borderStyle) props.borderColor = scaled(rgbOf(props.borderColor, FG_RGB), k)
+    if (props.backgroundColor) props.backgroundColor = scaled(rgbOf(props.backgroundColor, 0), k)
+  } else if (el.type === 'Text') {
+    own = rgbOf(props.color, inherit)
+    if (props.dimColor) own = parseInt(scaled(own, 0.6).slice(1), 16)
+    props.color = scaled(own, k)
+    delete props.dimColor
+  } else if (el.type === 'Button') {
+    own = props.dimColor ? DIM_RGB : FG_RGB
+    delete props.dimColor
+    const isBare = el.children === undefined || (Array.isArray(el.children) && el.children.length === 0)
+    if (isBare && typeof props.label === 'string') return { ...el, props, children: [text(props.label, scaled(own, k))] }
+  }
+  const out: Record<string, unknown> = { ...el, props }
+  if (el.children !== undefined) out.children = fadeTree(el.children, k, own, text)
+  return out
+}
+
 let effortChord = ''
 // the chord is whatever the person bound to pane:next, so the hint names theirs or nothing — 2026-10-11
 async function loadChord($: EngineInterface) {
@@ -700,6 +881,16 @@ export const register: Register = on => {
       // a reload inside the pick debounce leaves pending set: re-arm the apply — 2026-10-06
       if (p.model) modelTimer = $.clock.after(APPLY_MS, () => void applyModel($))
       if (p.effort) effortTimer = $.clock.after(APPLY_MS, () => void applyEffort($))
+      countOn = (await $.store.get('countMode').catch(() => undefined)) === true
+      await update($, countMode, () => countOn)
+      const dancing = await read($, dance)
+      if (dancing > 0) {
+        if ((await $.clock.now()) - dancing < DANCE_MS + REVEAL_MS) runDance($, dancing)
+        else {
+          await update($, reveal, () => 1)
+          await update($, dance, () => 0)
+        }
+      }
       const seen = e.surface ? [e.surface] : await $.session.surfaces().catch(() => [])
       const other = seen.find(x => x !== 'desktop')
       if (other) await enableFull($, `start surface=${other}`)
@@ -778,7 +969,30 @@ export const register: Register = on => {
       const effort = e.effort
       if (!p.effort && cur.effort !== effort) await update($, live, l => ({ ...l, effort }))
     }
-    return yield* next(e)
+    if (!isFull || !countOn || e.agentId) return yield* next(e)
+    const stream = next(e)
+    const sent = ctxPending
+    for await (const c of stream) {
+      // a hook that throws mid-stream is left where it stood, and the turn with it — 2026-10-11
+      try {
+        countChunk(c, sent)
+        kickCount($)
+      } catch {}
+      yield c
+    }
+    return await stream.result
+  })
+
+  // rows enter the context the moment they are appended; the reply's own rows are counted from its stream — 2026-10-11
+  on('session.append', async ($, e, next) => {
+    const r = await next(e)
+    if (isFull && countOn && !e.agentId && (e.message.role ?? e.message.type) === 'user' && e.door !== 'compaction') {
+      try {
+        ctxPending += e.message.content.reduce((n: number, b) => n + blockTokens(b), 0)
+        kickCount($)
+      } catch {}
+    }
+    return r
   })
 
   on('command.run', { command: 'effort' }, onCommand)
@@ -857,7 +1071,8 @@ export const register: Register = on => {
     const p = await read($, pending)
     const model = p.model || cur.model
     const effort = p.effort || cur.effort
-    const label = ctxLabel(await read($, context))
+    const ctx = await read($, context)
+    const label = ctxLabel(ctx)
     const up = await read($, paneUp)
     if (up && !label) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -865,9 +1080,33 @@ export const register: Register = on => {
     const hue = MODELS[i]?.hue ?? 'gray'
     const f = EFFORTS.indexOf(effort)
     const effortColor = f >= 0 ? EFFORT_COLORS[f] : 'gray'
+    let counter: RenderElement | null = null
+    if (label && (await read($, countMode))) {
+      const { n, prev } = await read($, counted)
+      const now = grouped(n)
+      const was = grouped(prev).padStart(now.length).slice(-now.length)
+      const runs: { text: string; isHot: boolean }[] = []
+      for (let k = 0; k < now.length; k++) {
+        const ch = now.charAt(k)
+        const isHot = ch !== was.charAt(k)
+        const last = runs[runs.length - 1]
+        if (last && last.isHot === isHot) last.text += ch
+        else runs.push({ text: ch, isHot })
+      }
+      counter = (
+        <Button key="ctx" plain onPress={() => toggleCount($)}>
+          {runs.map((r, k) => (
+            <Text key={`d${k}`} bold={r.isHot} color={ctxColor(n, r.isHot ? 0.6 : 0)}>
+              {r.text}
+            </Text>
+          ))}
+          <Text dimColor>{` / ${kTok(ctx.window)}`}</Text>
+        </Button>
+      )
+    } else if (label) counter = <Button key="ctx" plain dimColor label={label} onPress={() => toggleCount($)} />
     return (
       <Box flexDirection="row" justifyContent="flex-end" alignItems="center" gap={1} width={e.props.bodyColumns}>
-        {label ? <Text dimColor>{label}</Text> : null}
+        {counter}
         {up ? null : (
           <Box key="pick" flexDirection="row" alignItems="center" gap={1}>
             <Button key="to-pane" plain dimColor label={tr.toPane} onPress={() => openPane($, 'button')} />
@@ -935,6 +1174,47 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Input, Text } = $.ui.resolve(e)
+    const width = Math.max(18, e.props.bodyColumns)
+    const latestV = await read($, latest)
+    const hasUpdate = !!latestV && newerThan(latestV, pluginVersion)
+    const headRows = hasUpdate ? 4 : 3
+    const name = [...$.plugin.name]
+    const hues = glow(name.length)
+    const banner = (
+      <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={hues[0]} width={width}>
+        <Button key="name" plain onPress={() => startDance($)}>
+          {name.map((ch, k) => (
+            <Text key={`n${k}`} bold color={hues[k]}>
+              {ch}
+            </Text>
+          ))}
+          <Text dimColor>{`  v${pluginVersion}`}</Text>
+        </Button>
+        {hasUpdate ? (
+          <Button key="update" plain onPress={() => doUpdate($)}>
+            <Text color="#f0b429">{`✦ ${tr.updateAvail} v${latestV}`}</Text>
+          </Button>
+        ) : null}
+      </Box>
+    )
+    const danceAt = await read($, dance)
+    const fadeK = await read($, reveal)
+    const danceMs = danceAt > 0 ? (await $.clock.now()) - danceAt : DANCE_MS
+    if (danceMs < DANCE_MS && e.surface === 'terminal') {
+      const { Raster } = $.ui.resolve(e)
+      // no taller than the visible body: a taller tree scrolls a row mid-dance and strands a blitted row — 2026-10-11
+      const rows = headRows + Math.max(STAGE_MIN_ROWS, Math.min(e.props.scroll.bodyRows - headRows - 1, e.props.placement === 'dock' ? 60 : 20))
+      const toRgb = (h: string | undefined) => parseInt((h ?? '#cccccc').slice(1), 16)
+      const head: Head = { name: name.join(''), colors: hues.map(toRgb), tail: `  v${pluginVersion}`, update: hasUpdate ? `✦ ${tr.updateAvail} v${latestV}` : '', border: toRgb(hues[0]) }
+      stage = { columns: width, rows, head }
+      paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1] }
+      const cells = danceCells(width, rows, Math.max(0, danceMs) / 1000, tr.boom, head)
+      return (
+        <Box flexDirection="column" width={width} height={rows} backgroundColor="black">
+          <Raster key="dance" columns={width} rows={rows} cells={cells} />
+        </Box>
+      )
+    }
     const cur = await read($, live)
     const p = await read($, pending)
     const model = p.model || cur.model
@@ -943,9 +1223,6 @@ export const register: Register = on => {
     const hue = MODELS[i]?.hue ?? 'gray'
     const f = EFFORTS.indexOf(effort)
     const effortColor = f >= 0 ? EFFORT_COLORS[f] : 'gray'
-    const width = Math.max(18, e.props.bodyColumns)
-    const latestV = await read($, latest)
-    const hasUpdate = !!latestV && newerThan(latestV, pluginVersion)
     const alarm = await read($, timer)
     const d = await shownDraft($)
     const isArmed = alarm.at > 0
@@ -957,7 +1234,6 @@ export const register: Register = on => {
     const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
     // read only so the countdown redraws each minute — 2026-10-11
     await read($, minute)
-    const headRows = hasUpdate ? 4 : 3
     const cardRows = isWide ? 3 : 9
     // a short pane drops the gaps, never cuts a block — 2026-10-11
     const gap = e.props.scroll.bodyRows >= headRows + TIMER_ROWS + cardRows + 6 + 3 ? 1 : 0
@@ -965,8 +1241,6 @@ export const register: Register = on => {
     const modelAt = timerAt + TIMER_ROWS + gap + cardRows + gap
     paneRows = { timer: [timerAt + 1, timerAt + 3], model: [modelAt, modelAt + 2], effort: [modelAt + 3, modelAt + 5] }
     paneWidth = width
-    const name = [...$.plugin.name]
-    const hues = glow(name.length)
     // a child cannot paint on its own border (clipped to the inside), so titles are later siblings — 2026-10-11
     const framed = (key: string, text: string, box: unknown, foot?: unknown) => (
       <Box key={key} flexDirection="column" width={width}>
@@ -988,23 +1262,9 @@ export const register: Register = on => {
         </Button>
       </Box>
     )
-    return (
+    const tree = (
       <Box flexDirection="column" width={width} height={Math.max(e.props.scroll.bodyRows, modelAt + 6)} backgroundColor="black">
-        <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={hues[0]} width={width}>
-          <Text>
-            {name.map((ch, k) => (
-              <Text key={`n${k}`} bold color={hues[k]}>
-                {ch}
-              </Text>
-            ))}
-            <Text dimColor>{`  v${pluginVersion}`}</Text>
-          </Text>
-          {hasUpdate ? (
-            <Button key="update" plain onPress={() => doUpdate($)}>
-              <Text color="#f0b429">{`✦ ${tr.updateAvail} v${latestV}`}</Text>
-            </Button>
-          ) : null}
-        </Box>
+        {banner}
         {gap ? <Box height={1} /> : null}
         {framed(
           'timer',
@@ -1107,6 +1367,8 @@ export const register: Register = on => {
         )}
       </Box>
     )
+    if (danceAt <= 0 || fadeK >= 1) return tree
+    return fadeTree(tree, fadeK, FG_RGB, (text, color) => <Text color={color}>{text}</Text>) as RenderElement
   })
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {

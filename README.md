@@ -13,7 +13,8 @@ Mod for Claude Code (console + Claude desktop), plus a sidebar plugin for openco
 | Cache alert (toast + sound, 10 min before miss; off at 99%+ limits or right after a compact) | yes | yes |
 | Auto compact at 99% of the 5h limit | yes | yes |
 | Model / effort pickers | above prompt | - |
-| Context usage counter | above the prompt (right) | under the prompt |
+| Context usage counter | above the prompt (right), click → live full count | under the prompt |
+| Dancing Clawd (click the pane's name) | yes | - |
 | Side pane: message timer, Sessions, Resume, Compact, model, effort | yes | - |
 
 - **Auto compact:** when the 5h limit reaches 99%, a running turn is stopped and `/compact` runs, once per 5h window. Not when the 5h limit resets in less than 59 min: waiting is cheaper. Better a controlled compact now than the work dying on its own and re-reading the whole context after the reset. It does not resume the work afterwards. Skipped when a compaction (manual or the engine's own) already ran in the last 10 min. The limit is checked every 5 min below 75%, every minute from 75%, every 30 s from 90%, every second from 95%.
@@ -23,6 +24,8 @@ Mod for Claude Code (console + Claude desktop), plus a sidebar plugin for openco
 - **Limits shared between sessions:** every session shows the freshest limits, not only after its own first reply. Works on Windows, macOS and Linux.
 - Cache alert sound: `plugin/assets/cache-alert.mp3`, installed with the plugin. Windows: system toast + sound. macOS: sound (system player, `afplay`) + in-app toast. Other systems: in-app toast only.
 - **ctrl+t cycles effort** (console): the effort ◀/▶ in the band and in the pane carry the engine actions `pane:previous` / `pane:next`, so the chord itself lives in `~/.claude/keybindings.json` — this setup binds `ctrl+t` / `ctrl+shift+t` there. The engine takes those actions over only while 2+ panes are open. The effort block shows the chord you bound (`ctrl+t змінити`); no binding, no hint.
+- **Context counter, live mode** (console): a click on `125k/1M` turns it into the full number, `125 432 / 1M`, rolling up as tokens arrive: the reply counted while it streams, each tool result and prompt the moment it lands, the exact figure taken from every API response. Colour slides green → pure yellow at 600k → pure red at 900k. Click again for the short form; the choice is kept across sessions.
+- **Clawd dance** (console): a click on the plugin's name in the pane plays a 15 s disco dance — Clawd in block characters under a mirror ball. At the end a bomb falls out of his pocket and goes off (`BOOM!` / `БАХ!`): fire fills the whole pane, Clawd flies off, the fire dies to black and the pane fades back in. Both run locally: no request, no limits spent.
 - **Update check**: the pane header reads the released version from GitHub when a session starts. When a newer release exists it draws `v1.1.8 ✦ нова v1.1.9`; a click runs `claude plugin update`. Restart applies.
 
 ## opencode
