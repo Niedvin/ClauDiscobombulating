@@ -104,7 +104,8 @@ $withOpenCode = $false
 if ($hasOpenCode) {
   # no console to ask (redirected input) counts as the default yes — 2026-10-11
   $answer = try { Read-Host 'opencode found. Install the opencode plugin too? [Y/n]' } catch { '' }
-  $withOpenCode = $answer -notmatch '^\s*n'
+  # Read-Host answers $null at EOF, and $null -notmatch is $null, not true — 2026-10-12
+  $withOpenCode = ([string]$answer) -notmatch '^\s*n'
 }
 if ($hasLocal) { Invoke-Claude @('plugin', 'validate', (Join-Path $Root 'plugin')) }
 foreach ($id in $legacyPlugins) { Invoke-Claude @('plugin', 'uninstall', $id, '--scope', 'user') }
