@@ -7,7 +7,7 @@ export type Context = { tokens: number; window: number; percent: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'ClauDiscobombulating': { limits: Limit[]; live: Live; pending: Pending; flag: string; log: string[]; latest: string; paneUp: boolean; timer: Timer; draft: Draft; showResetAt: boolean; cacheLeft: number; activeAt: number; alerted: number; compactedFor: string; compactedAt: number; sinceCompact: number; context: Context }
+    'ClauDiscobombulating': { limits: Limit[]; live: Live; pending: Pending; flag: string; log: string[]; latest: string; paneUp: boolean; timer: Timer; draft: Draft; showResetAt: boolean; cacheLeft: number; activeAt: number; alerted: number; compactedFor: string; compactedAt: number; sinceCompact: number; context: Context; full: boolean }
   }
 }
 

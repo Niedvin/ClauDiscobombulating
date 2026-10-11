@@ -25,6 +25,8 @@ const CACHE_TTL_MS = 3600000
 const CACHE_SHOW_BELOW = 55
 const ALERT_MIN = 10
 const AUTO_COMPACT_AT = 99
+// a window this close to its reset frees itself; a compact would only cost — 2026-10-11
+const NO_COMPACT_BEFORE_RESET_MS = 59 * 60000
 const COMPACT_GRACE_MS = 600000
 const COMPACT_QUIET_MSGS = 5
 const ALERT_TITLE = 'ClauDiscobombulating'
@@ -105,6 +107,8 @@ const sinceCompact = atom({ plugin: 'ClauDiscobombulating', key: 'sinceCompact' 
 const context = atom({ plugin: 'ClauDiscobombulating', key: 'context' } as const, { tokens: 0, window: 0, percent: -1 } as Context)
 const log = atom({ plugin: 'ClauDiscobombulating', key: 'log' } as const, [] as string[])
 const latest = atom({ plugin: 'ClauDiscobombulating', key: 'latest' } as const, '')
+// the band reads this, not isFull: a draw that read no atom is never redrawn — 2026-10-11
+const full = atom({ plugin: 'ClauDiscobombulating', key: 'full' } as const, false)
 
 const modelIndex = (id: string) => MODELS.findIndex(m => id.toLowerCase().includes(m.family))
 const labels: Record<string, string> = {}
@@ -324,6 +328,7 @@ async function autoCompact($: EngineInterface) {
   lastCheck = now
   lastPercent = five?.percentUsed ?? 0
   if (!five || five.percentUsed < AUTO_COMPACT_AT || isCompacting) return
+  if (five.resetsAt && Date.parse(five.resetsAt) - now < NO_COMPACT_BEFORE_RESET_MS) return
   isCompacting = true
   try {
     if (now - (await read($, compactedAt)) < COMPACT_GRACE_MS) return
@@ -626,6 +631,7 @@ async function doUpdate($: EngineInterface) {
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
+  await update($, full, () => true)
   await loadVersion($).catch(() => undefined)
   void checkVersion($).catch(() => undefined)
   await $.command.register({ name: 'ClauDiscobombulating', description: 'Open the model and effort pane' })
@@ -672,8 +678,10 @@ export const register: Register = on => {
 
   on('session.attach', async ($, e, next) => {
     const r = await next(e)
-    if (e.surface === 'desktop') isFull = false
-    else await enableFull($, `attach surface=${e.surface}`).catch(err => note($, `attach failed ${String(err)}`))
+    if (e.surface === 'desktop') {
+      isFull = false
+      await update($, full, () => false)
+    } else await enableFull($, `attach surface=${e.surface}`).catch(err => note($, `attach failed ${String(err)}`))
     return r
   })
 
@@ -810,7 +818,7 @@ export const register: Register = on => {
         </Box>
       )
     }
-    if (!isFull) return next(e)
+    if (!(await read($, full))) return next(e)
     metrics = { surface: e.surface, bodyColumns: e.props.bodyColumns, maxRows: e.props.maxRows, viewport: e.viewport ?? null }
     const cur = await read($, live)
     const p = await read($, pending)
@@ -977,10 +985,15 @@ export const register: Register = on => {
         </Box>
         <Box height={1} />
         <Box flexDirection="column" alignItems="center" justifyContent="center" borderStyle="round" borderColor={effortColor} backgroundColor="black" width={width}>
-          <Text bold color={effortColor}>
-            {effort || 'auto'}
-            {p.effort ? ' •' : ''}
-          </Text>
+          {/* the band hides its picker while the pane is up, so the ctrl+t actions live here too — 2026-10-11 */}
+          <Box flexDirection="row" alignItems="center" gap={2}>
+            <Button key="e-prev" plain dimColor label="◀" action="pane:previous" onPress={() => pick($, 'effort', -1)} />
+            <Text bold color={effortColor}>
+              {effort || 'auto'}
+              {p.effort ? ' •' : ''}
+            </Text>
+            <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
+          </Box>
           <Text>
             {EFFORTS.map((lv, k) => (
               <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k].repeat(2)} </Text>

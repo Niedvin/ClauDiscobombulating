@@ -67,6 +67,24 @@ test('99% while idle: compact without abort', { timeoutMs: 20000 }, async ($, on
   expect(ran).toEqual(['effort low', 'compact', 'effort high'])
 })
 
+test('99% with the 5h reset under 59 min away: no compact', { timeoutMs: 20000 }, async ($, on) => {
+  const start = Date.now()
+  const clock = mock.clock(on, { now: start })
+  const ran = await setup($, on, true)
+  await $.session.measure(measure(99, new Date(start + 58 * 60000).toISOString()))
+  await clock.advance(3000)
+  expect(ran).toEqual([])
+})
+
+test('99% with the 5h reset 60 min away: compact', { timeoutMs: 20000 }, async ($, on) => {
+  const start = Date.now()
+  const clock = mock.clock(on, { now: start })
+  const ran = await setup($, on, false)
+  await $.session.measure(measure(99, new Date(start + 60 * 60000).toISOString()))
+  await clock.advance(3000)
+  expect(ran).toEqual(['effort low', 'compact', 'effort high'])
+})
+
 const summary = [{ role: 'assistant', text: 'summary', toolUses: [] }] as const
 const prompt = [{ role: 'user', text: 'hi', toolUses: [] }] as const
 
