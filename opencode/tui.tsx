@@ -1,5 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createMemo, createSignal, For, Show } from "solid-js"
+import type { Renderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
+import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { spawn } from "node:child_process"
 import { readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -26,6 +28,9 @@ const BLUE = "#4f9cf0"
 const PURPLE = "#b678e0"
 const CYAN = "#56b6c2"
 const WHEEL_GAP_MS = 80
+// opencode's own session sidebar: 42 wide, shown above 120 columns — 2026-10-11
+const SIDEBAR_W = 42
+const SIDEBAR_FROM = 120
 
 const UK = {
   defaultText: "продовжуй",
@@ -68,6 +73,16 @@ const EN: typeof UK = {
 
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
 const two = (n: number) => String(n).padStart(2, "0")
+function hsl(h: number, s: number, l: number) {
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))).toString(16).padStart(2, "0")
+  }
+  return `#${f(0)}${f(8)}${f(4)}`
+}
+// purple → pink → orange across the name, as on the Claude Code side — 2026-10-11
+const hues = Array.from({ length: NAME.length }, (_, k) => hsl((280 + (k * 120) / (NAME.length - 1)) % 360, 0.75, 0.65))
 const wrap = (i: number, n: number) => ((i % n) + n) % n
 const tone = (p: number) => (p >= 90 ? RED : p >= 70 ? YELLOW : GREEN)
 const UK_TAG = /^uk(?![a-z])/i
@@ -319,14 +334,14 @@ function setup(context: Ctx) {
     </text>
   )
 
-  const Card = (p: { label: string; fg: string; onClick: () => void }) => (
-    <box border borderStyle="rounded" borderColor={p.fg} flexGrow={1} alignItems="center" onMouseUp={() => p.onClick()}>
+  const Card = (p: { label: string; fg: string; width?: number; onClick: () => void }) => (
+    <box border borderStyle="rounded" borderColor={p.fg} width={p.width} flexGrow={p.width ? 0 : 1} flexBasis={p.width ?? 0} alignItems="center" onMouseUp={() => p.onClick()}>
       <text fg={p.fg}>{p.label}</text>
     </box>
   )
 
-  function Section(p: { sessionID: string }) {
-    const sid = () => p.sessionID
+  function Section(p: { sessionID?: string }) {
+    const sid = () => p.sessionID ?? ""
     const variants = createMemo(() => ui.model.variant.list())
     const variant = createMemo(() => ui.model.current()?.variant)
     const hue = createMemo(() => effortHue(variant()) ?? theme.border.base)
@@ -334,52 +349,66 @@ function setup(context: Ctx) {
     const draft = createMemo(() => shownDraft())
     const armed = () => mem.timer.at > 0
     const text = () => `«${mem.timer.text || tr().defaultText}»`
+    const fireAt = () => (armed() ? mem.timer.at : nextAt(draft().h, draft().m, now()))
     return (
       <box gap={1}>
-        <box>
-          <box flexDirection="row" gap={1}>
-            <text fg={theme.text.base}>
-              <b>{NAME}</b>
-            </text>
-            <text fg={theme.text.muted}>{`v${version}`}</text>
-          </box>
+        <box border borderStyle="rounded" borderColor={hues[0]} alignItems="center">
+          <text>
+            <b>
+              <For each={[...NAME]}>{(ch, k) => <span style={{ fg: hues[k()] }}>{ch}</span>}</For>
+            </b>
+            <span style={{ fg: theme.text.muted }}>{`  v${version}`}</span>
+          </text>
           <Show when={mem.latest && newerThan(mem.latest, version)}>
             <Click label={`✦ ${tr().updateAvail} v${mem.latest}`} fg={YELLOW} onClick={() => void selfUpdate()} />
           </Show>
         </box>
 
-        <box border borderStyle="rounded" borderColor={armed() ? YELLOW : theme.border.base} title={` ${tr().timer} `} titleColor={theme.text.muted} paddingX={1}>
-          <Show
-            when={armed()}
-            fallback={
-              <>
-                <box flexDirection="row" justifyContent="space-between">
-                  <box flexDirection="row">
+        <Show when={p.sessionID}>
+          <box border borderStyle="rounded" borderColor={armed() ? YELLOW : theme.border.base} title={` ${tr().timer} `} titleColor={theme.text.muted} paddingX={1} paddingTop={1}>
+            <box flexDirection="row" justifyContent="center">
+              <Show
+                when={armed()}
+                fallback={
+                  <>
                     <text fg={theme.text.base}>{"⏰ "}</text>
                     <Click label={two(draft().h)} bold onClick={() => nudge("h", 1)} onScroll={d => nudge("h", d)} />
                     <text fg={theme.text.muted}>{" : "}</text>
                     <Click label={two(draft().m)} bold onClick={() => nudge("m", 1)} onScroll={d => nudge("m", d)} />
-                  </box>
-                  <Click label={tr().sendBtn} fg={GREEN} onClick={() => arm(sid())} />
-                </box>
-                <Click label={text()} fg={theme.text.muted} onClick={() => void editText()} />
-              </>
-            }
-          >
-            <box flexDirection="row" justifyContent="space-between">
-              <text fg={YELLOW}>
-                <b>{`⏰ ${two(new Date(mem.timer.at).getHours())} : ${two(new Date(mem.timer.at).getMinutes())}`}</b>
-              </text>
-              <Click label={tr().cancelBtn} fg={theme.text.muted} onClick={() => setMem(s => void (s.timer = { ...s.timer, at: 0 }))} />
+                  </>
+                }
+              >
+                <text fg={YELLOW}>
+                  <b>{`⏰ ${two(new Date(mem.timer.at).getHours())} : ${two(new Date(mem.timer.at).getMinutes())}`}</b>
+                </text>
+              </Show>
             </box>
-            <text fg={theme.text.muted}>{`${text()} · ${tr().via} ${resetIn(new Date(mem.timer.at).toISOString(), now())}`}</text>
-          </Show>
-        </box>
+            <box flexDirection="row" justifyContent="center">
+              <text fg={theme.text.muted}>{`${tr().via} ${resetIn(new Date(fireAt()).toISOString(), now())}`}</text>
+            </box>
+            <box height={1} />
+            <Click label={`✎ ${text()}`} fg={armed() ? theme.text.muted : theme.text.base} onClick={() => !armed() && void editText()} />
+            <box
+              border
+              borderStyle="rounded"
+              borderColor={armed() ? theme.border.base : GREEN}
+              alignItems="center"
+              onMouseUp={() => (armed() ? setMem(s => void (s.timer = { ...s.timer, at: 0 })) : arm(sid()))}
+            >
+              <text fg={armed() ? theme.text.muted : GREEN}>
+                <b>{armed() ? tr().cancelBtn : tr().sendBtn}</b>
+              </text>
+            </box>
+          </box>
+        </Show>
 
         <box flexDirection="row" gap={1}>
-          <Card label="☰ Sessions" fg={PURPLE} onClick={() => keymap.dispatch("session.list")} />
-          <Card label="⟲ Resume" fg={GREEN} onClick={() => void send(sid(), RESUME_TEXT)} />
-          <Card label="⇊ Compact" fg={BLUE} onClick={() => keymap.dispatch("session.compact")} />
+          {/* opentui counts ☰ as 2 cells: 13 fits the label, the other 2 share the rest of 37 — 2026-10-11 */}
+          <Card label="☰ Sessions" fg={PURPLE} width={p.sessionID ? 13 : undefined} onClick={() => keymap.dispatch("session.list")} />
+          <Show when={p.sessionID}>
+            <Card label="⇊ Compact" fg={BLUE} onClick={() => keymap.dispatch("session.compact")} />
+            <Card label="⟲ Resume" fg={GREEN} onClick={() => void send(sid(), RESUME_TEXT)} />
+          </Show>
         </box>
 
         <box>
@@ -432,35 +461,83 @@ function setup(context: Ctx) {
             </box>
           </Show>
         </box>
-
-        <Show when={limits().length > 0}>
-          <box border borderStyle="rounded" borderColor={theme.border.base} title=" OpenCode Go " titleColor={theme.text.muted} paddingX={1}>
-            <For each={limits()}>
-              {l => {
-                const n = () => Math.round(Math.min(l.percentUsed, 100) / 10)
-                return (
-                  <text>
-                    <span style={{ fg: theme.text.muted }}>{`${shortName(l.kind).padEnd(3)} `}</span>
-                    <span style={{ fg: tone(l.percentUsed) }}>{"━".repeat(n())}</span>
-                    <span style={{ fg: theme.border.base }}>{"─".repeat(10 - n())}</span>
-                    <span style={{ fg: tone(l.percentUsed) }}>{` ${String(Math.round(l.percentUsed)).padStart(3)}%`}</span>
-                    <Show when={l.resetsAt}>
-                      <span style={{ fg: theme.text.muted }}>{` ↻ ${resetIn(l.resetsAt, now())}`}</span>
-                    </Show>
-                  </text>
-                )
-              }}
-            </For>
-          </box>
-        </Show>
       </box>
     )
   }
 
-  const release = ui.slot({ append: "sidebar.content", render: input => <Section sessionID={input.sessionID} /> })
+  function Limits() {
+    return (
+      <Show when={limits().length > 0}>
+        <box border borderStyle="rounded" borderColor={theme.border.base} title=" OpenCode Go " titleColor={theme.text.muted} paddingX={1}>
+          <For each={limits()}>
+            {l => {
+              const n = () => Math.round(Math.min(l.percentUsed, 100) / 10)
+              return (
+                <text>
+                  <span style={{ fg: theme.text.muted }}>{`${shortName(l.kind).padEnd(3)} `}</span>
+                  <span style={{ fg: tone(l.percentUsed) }}>{"━".repeat(n())}</span>
+                  <span style={{ fg: theme.border.base }}>{"─".repeat(10 - n())}</span>
+                  <span style={{ fg: tone(l.percentUsed) }}>{` ${String(Math.round(l.percentUsed)).padStart(3)}%`}</span>
+                  <Show when={l.resetsAt}>
+                    <span style={{ fg: theme.text.muted }}>{` ↻ ${resetIn(l.resetsAt, now())}`}</span>
+                  </Show>
+                </text>
+              )
+            }}
+          </For>
+        </box>
+      </Show>
+    )
+  }
+
+  // home has no sidebar slot: draw one beside the routes by turning the app column into a row — 2026-10-11
+  function Beside() {
+    let el: Renderable | undefined
+    let host: Renderable | null = null
+    onMount(() => {
+      host = el?.parent ?? null
+      if (host) host.flexDirection = "row"
+    })
+    onCleanup(() => {
+      if (host) host.flexDirection = "column"
+    })
+    return (
+      <box
+        ref={r => (el = r)}
+        width={SIDEBAR_W}
+        height="100%"
+        flexShrink={0}
+        backgroundColor={theme.background.raised.base}
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        paddingRight={3}
+      >
+        <Section />
+        <box flexGrow={1} />
+        <Limits />
+      </box>
+    )
+  }
+
+  function Home() {
+    const dims = useTerminalDimensions()
+    return (
+      <Show when={ui.router.current().type === "home" && dims().width > SIDEBAR_FROM}>
+        <Beside />
+      </Show>
+    )
+  }
+
+  const releases = [
+    ui.slot({ append: "sidebar.content", render: input => <Section sessionID={input.sessionID} /> }),
+    // the footer has no scrollbar gutter: 1 col in keeps the right edge in line — 2026-10-11
+    ui.slot({ prepend: "sidebar.footer", render: () => <box paddingRight={1}><Limits /></box> }),
+    ui.slot({ append: "app", render: () => <Home /> }),
+  ]
   return () => {
     clearInterval(every)
-    release()
+    for (const release of releases) release()
   }
 }
 

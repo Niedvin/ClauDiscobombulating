@@ -14,10 +14,9 @@ const EFFORT_COLORS = ['#4f9cf0', '#3fbf8f', '#3fbf8f', '#3fbf8f', '#ef5b5b']
 const APPLY_MS = 700
 const UNREAD = '?'
 const PANE = 'ClauDiscobombulating'
-const PANE_COLS = 24
-const STACK_ROWS = 22
-// the 4+1 before the timer is the name header (4 rows) plus its gap — 2026-10-11
-const CARDS_ROWS = 4 + 1 + 7 + 1 + STACK_ROWS
+// 3 cards of 12 (label 10 + border) and 2 gaps in one row — 2026-10-11
+const PANE_COLS = 38
+const TIMER_ROWS = 12
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
@@ -60,6 +59,8 @@ const UK = {
   cancelBtn: '✕  скасувати',
   sendBtn: '✓  відправити',
   effortHint: 'змінити',
+  timer: 'Таймер',
+  model: 'Модель',
 }
 const EN: typeof UK = {
   defaultText: 'continue',
@@ -88,6 +89,8 @@ const EN: typeof UK = {
   cancelBtn: '✕  cancel',
   sendBtn: '✓  send',
   effortHint: 'to change',
+  timer: 'Timer',
+  model: 'Model',
 }
 let tr = EN
 
@@ -111,6 +114,7 @@ const log = atom({ plugin: 'ClauDiscobombulating', key: 'log' } as const, [] as 
 const latest = atom({ plugin: 'ClauDiscobombulating', key: 'latest' } as const, '')
 // the band reads this, not isFull: a draw that read no atom is never redrawn — 2026-10-11
 const full = atom({ plugin: 'ClauDiscobombulating', key: 'full' } as const, false)
+const minute = atom({ plugin: 'ClauDiscobombulating', key: 'minute' } as const, 0)
 
 const modelIndex = (id: string) => MODELS.findIndex(m => id.toLowerCase().includes(m.family))
 const labels: Record<string, string> = {}
@@ -172,6 +176,16 @@ async function savedEffort($: EngineInterface, model: string) {
 
 
 const two = (n: number) => String(n).padStart(2, '0')
+function hsl(h: number, s: number, l: number) {
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))).toString(16).padStart(2, '0')
+  }
+  return `#${f(0)}${f(8)}${f(4)}`
+}
+// purple → pink → orange across n letters — 2026-10-11
+const glow = (n: number) => Array.from({ length: n }, (_, k) => hsl((280 + (k * 120) / Math.max(1, n - 1)) % 360, 0.75, 0.65))
 
 const cacheText = (min: number) => (min <= 0 ? '⚠ Cache Miss' : `${tr.cache} ${min}${tr.min}`)
 const cacheColor = (min: number) => (min <= 5 ? '#ef5b5b' : min <= 15 ? '#f0b429' : '#3fbf8f')
@@ -404,6 +418,8 @@ async function poll($: EngineInterface) {
     }
     void autoCompact($).catch(err => note($, `auto compact failed ${String(err)}`))
     if (!isFull) return
+    const m = Math.floor(tick / 60000)
+    if (m !== (await read($, minute))) await update($, minute, () => m)
     const up = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced && x.isShown)
     if (up !== (await read($, paneUp))) await update($, paneUp, () => up)
     const model = await $.session.model()
@@ -668,7 +684,7 @@ async function enableFull($: EngineInterface, why: string) {
 export const register: Register = on => {
   let metrics: Record<string, unknown> = {}
   let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1] }
-  let paneWidth = 24
+  let paneWidth = PANE_COLS
   let lastWheel = 0
 
   on('session.start', async ($, e, next) => {
@@ -909,8 +925,11 @@ export const register: Register = on => {
     lastWheel = now
     if (zone === 'model') await pick($, 'model', dir).catch(() => undefined)
     else if (zone === 'effort') await pick($, 'effort', dir).catch(() => undefined)
-    else if (!(await read($, timer).catch(() => ({ at: 0 }))).at) await nudgeDraft($, (e.pointer?.column ?? 0) < paneWidth / 2 ? 'h' : 'm', dir).catch(() => undefined)
-    else return next(e)
+    else {
+      const col = e.pointer?.column ?? 0
+      if ((await read($, timer).catch(() => ({ at: 0 }))).at) return next(e)
+      await nudgeDraft($, col < paneWidth / 2 ? 'h' : 'm', dir).catch(() => undefined)
+    }
     return {}
   })
 
@@ -925,105 +944,167 @@ export const register: Register = on => {
     const f = EFFORTS.indexOf(effort)
     const effortColor = f >= 0 ? EFFORT_COLORS[f] : 'gray'
     const width = Math.max(18, e.props.bodyColumns)
-    const rows = e.props.scroll.bodyRows
-    const height = Math.max(rows, CARDS_ROWS)
-    const stack = height - STACK_ROWS
-    // the timer follows the 4-row header and its 1-row gap — 2026-10-11
-    paneRows = { timer: [5, 11], model: [stack + 12, stack + 15], effort: [stack + 17, stack + 21] }
-    paneWidth = width
     const latestV = await read($, latest)
+    const hasUpdate = !!latestV && newerThan(latestV, pluginVersion)
     const alarm = await read($, timer)
     const d = await shownDraft($)
     const isArmed = alarm.at > 0
     const at = isArmed ? new Date(alarm.at) : undefined
     const hh = at ? at.getHours() : d.h
     const mm = at ? at.getMinutes() : d.m
-    return (
-      <Box flexDirection="column" width={width} height={height} backgroundColor="black" justifyContent="space-between">
-        <Box flexDirection="column" width={width}>
-          <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor="#6c6c7c" backgroundColor="black" width={width}>
-            <Text bold color="#ececf1">
-              {$.plugin.name}
-            </Text>
-            {latestV && newerThan(latestV, pluginVersion) ? (
-              <Box flexDirection="row" justifyContent="center">
-                <Text dimColor>{`v${pluginVersion}`}</Text>
-                <Button key="update" plain label={` ${tr.updateAvail} v${latestV}`} onPress={() => doUpdate($)} />
-              </Box>
-            ) : (
-              <Text dimColor>{`v${pluginVersion}`}</Text>
-            )}
+    const isWide = width >= PANE_COLS
+    const cardW = isWide ? Math.floor((width - 2) / 3) : width
+    const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
+    // read only so the countdown redraws each minute — 2026-10-11
+    await read($, minute)
+    const headRows = hasUpdate ? 4 : 3
+    const cardRows = isWide ? 3 : 9
+    // a short pane drops the gaps, never cuts a block — 2026-10-11
+    const gap = e.props.scroll.bodyRows >= headRows + TIMER_ROWS + cardRows + 6 + 3 ? 1 : 0
+    const timerAt = headRows + gap
+    const modelAt = timerAt + TIMER_ROWS + gap + cardRows + gap
+    paneRows = { timer: [timerAt + 1, timerAt + 3], model: [modelAt, modelAt + 2], effort: [modelAt + 3, modelAt + 5] }
+    paneWidth = width
+    const name = [...$.plugin.name]
+    const hues = glow(name.length)
+    // a child cannot paint on its own border (clipped to the inside), so titles are later siblings — 2026-10-11
+    const framed = (key: string, text: string, box: unknown, foot?: unknown) => (
+      <Box key={key} flexDirection="column" width={width}>
+        {box}
+        <Box position="absolute" top={0} left={2}>
+          <Text color="#9a9aab">{` ${text} `}</Text>
+        </Box>
+        {foot ? (
+          <Box position="absolute" bottom={0} right={2}>
+            {foot}
           </Box>
-          <Box height={1} />
-          <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} backgroundColor="black" width={width}>
-            <Text bold color={isArmed ? '#f0b429' : '#ececf1'}>
-              ⏰ {two(hh)} : {two(mm)}
-            </Text>
-            <Text color="#3a3a48">{'─'.repeat(Math.max(4, width - 4))}</Text>
-            {isArmed ? (
-              <Text color="#9a9aab" wrap="truncate-end">
-                «{alarm.text}» · {tr.via} {inFor(alarm.at - Date.now())}
+        ) : null}
+      </Box>
+    )
+    const card = (key: string, label: string, color: string, onPress: () => unknown) => (
+      <Box key={`card-${key}`} width={cardW} justifyContent="center" borderStyle="round" borderColor={color}>
+        <Button key={key} plain onPress={onPress}>
+          <Text color={color}>{label}</Text>
+        </Button>
+      </Box>
+    )
+    return (
+      <Box flexDirection="column" width={width} height={Math.max(e.props.scroll.bodyRows, modelAt + 6)} backgroundColor="black">
+        <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={hues[0]} width={width}>
+          <Text>
+            {name.map((ch, k) => (
+              <Text key={`n${k}`} bold color={hues[k]}>
+                {ch}
               </Text>
-            ) : (
-              <Input key="timer-text" placeholder={tr.placeholder} submitLabel="" value={alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text })); await armTimer($) }} />
-            )}
-            <Text color="#3a3a48">{'─'.repeat(Math.max(4, width - 4))}</Text>
+            ))}
+            <Text dimColor>{`  v${pluginVersion}`}</Text>
+          </Text>
+          {hasUpdate ? (
+            <Button key="update" plain onPress={() => doUpdate($)}>
+              <Text color="#f0b429">{`✦ ${tr.updateAvail} v${latestV}`}</Text>
+            </Button>
+          ) : null}
+        </Box>
+        {gap ? <Box height={1} /> : null}
+        {framed(
+          'timer',
+          tr.timer,
+          <Box flexDirection="column" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} paddingX={1} width={width}>
+            <Box height={1} />
             <Box flexDirection="row" justifyContent="center">
               {isArmed ? (
-                <Button key="timer-cancel" plain label={tr.cancelBtn} onPress={() => update($, timer, t => ({ ...t, at: 0 }))} />
+                <Text bold color="#f0b429">{`⏰ ${two(hh)} : ${two(mm)}`}</Text>
               ) : (
-                <Button key="timer-arm" plain label={tr.sendBtn} onPress={() => armTimer($)} />
+                <Box flexDirection="row">
+                  <Text>{'⏰ '}</Text>
+                  <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
+                    <Text bold color="#ececf1">{two(hh)}</Text>
+                  </Button>
+                  <Text dimColor>{' : '}</Text>
+                  <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
+                    <Text bold color="#ececf1">{two(mm)}</Text>
+                  </Button>
+                </Box>
               )}
             </Box>
-          </Box>
+            <Box flexDirection="row" justifyContent="center">
+              <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
+            </Box>
+            <Box height={1} />
+            <Box flexDirection="row" borderStyle="round" borderColor={isArmed ? '#3a3a48' : '#9a9aab'} backgroundColor="#1c1c24" paddingX={1}>
+              <Text color="#9a9aab">{'✎ '}</Text>
+              {isArmed ? (
+                <Text color="#9a9aab" wrap="truncate-end">{alarm.text}</Text>
+              ) : (
+                <Input key="timer-text" placeholder={tr.placeholder} submitLabel="" value={alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text })); await armTimer($) }} />
+              )}
+            </Box>
+            <Box justifyContent="center" borderStyle="round" borderColor={isArmed ? '#6c6c7c' : '#3fbf8f'}>
+              {isArmed ? (
+                <Button key="timer-cancel" plain onPress={() => update($, timer, t => ({ ...t, at: 0 }))}>
+                  <Text color="#9a9aab">{tr.cancelBtn}</Text>
+                </Button>
+              ) : (
+                <Button key="timer-arm" plain onPress={() => armTimer($)}>
+                  <Text bold color="#3fbf8f">{tr.sendBtn}</Text>
+                </Button>
+              )}
+            </Box>
+          </Box>,
+        )}
+        {gap ? <Box height={1} /> : null}
+        <Box flexDirection={isWide ? 'row' : 'column'} gap={isWide ? 1 : 0} width={width}>
+          {card('sessions', '☰ Sessions', '#b678e0', () => sessions($))}
+          {card('compact', '⇊ Compact', '#4f9cf0', () => compact($))}
+          {card('resume', '⟲ Resume', '#3fbf8f', () => resume($, e.surface))}
         </Box>
-        <Box flexDirection="column" width={width}>
-        <Box flexDirection="row" justifyContent="center" borderStyle="round" borderColor="#b678e0" backgroundColor="black" width={width}>
-          <Button key="sessions" plain label="☰  Sessions" onPress={() => sessions($)} />
-        </Box>
-        <Box height={1} />
-        <Box flexDirection="row" justifyContent="center" borderStyle="round" borderColor="#3fbf8f" backgroundColor="black" width={width}>
-          <Button key="resume" plain label="⟲  Resume" onPress={() => resume($, e.surface)} />
-        </Box>
-        <Box height={1} />
-        <Box flexDirection="row" justifyContent="center" borderStyle="round" borderColor="#4f9cf0" backgroundColor="black" width={width}>
-          <Button key="compact" plain label="⇊  Compact" onPress={() => compact($)} />
-        </Box>
-        <Box height={1} />
-        <Box flexDirection="column" alignItems="center" justifyContent="center" borderStyle="round" borderColor={hue} backgroundColor="black" width={width}>
-          <Text bold color={hue}>
-            {modelLabel(model)}
-            {p.model ? ' •' : ''}
-          </Text>
-          <Text>
-            {MODELS.map((m, k) => (
-              <Text key={m.family} color={k === i ? hue : 'gray'}>{k === i ? ' ● ' : ' · '}</Text>
-            ))}
-          </Text>
-        </Box>
-        <Box height={1} />
-        <Box flexDirection="column" alignItems="center" justifyContent="center" borderStyle="round" borderColor={effortColor} backgroundColor="black" width={width}>
-          {/* the band hides its picker while the pane is up, so the ctrl+t actions live here too — 2026-10-11 */}
-          <Box flexDirection="row" alignItems="center" gap={2}>
-            <Button key="e-prev" plain dimColor label="◀" action="pane:previous" onPress={() => pick($, 'effort', -1)} />
-            <Text bold color={effortColor}>
-              {effort || 'auto'}
-              {p.effort ? ' •' : ''}
+        {gap ? <Box height={1} /> : null}
+        {framed(
+          'model',
+          tr.model,
+          <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={hue} paddingX={1} width={width}>
+            <Box flexDirection="row" gap={2}>
+              <Button key="m-prev" plain dimColor label="◀" onPress={() => pick($, 'model', -1)} />
+              <Text bold color={hue}>
+                {modelLabel(model)}
+                {p.model ? ' •' : ''}
+              </Text>
+              <Button key="m-next" plain dimColor label="▶" onPress={() => pick($, 'model', 1)} />
+            </Box>
+            <Text>
+              {MODELS.map((m, k) => (
+                <Text key={m.family} color={k === i ? hue : 'gray'}>{`${k ? ' ' : ''}${k === i ? '●' : '·'}`}</Text>
+              ))}
             </Text>
-            <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
-          </Box>
-          <Text>
-            {EFFORTS.map((lv, k) => (
-              <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k].repeat(2)} </Text>
-            ))}
-          </Text>
-          {/* the row stays without a chord: STACK_ROWS and the wheel zones count it — 2026-10-11 */}
-          <Text key="chord">
-            <Text bold color="#9a9aab">{effortChord}</Text>
-            <Text dimColor>{effortChord ? ` ${tr.effortHint}` : ' '}</Text>
-          </Text>
-        </Box>
-        </Box>
+          </Box>,
+        )}
+        {framed(
+          'effort',
+          'Effort',
+          <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={effortColor} paddingX={1} width={width}>
+            {/* the band hides its picker while the pane is up, so the ctrl+t actions live here too — 2026-10-11 */}
+            <Box flexDirection="row" gap={2}>
+              <Button key="e-prev" plain dimColor label="◀" action="pane:previous" onPress={() => pick($, 'effort', -1)} />
+              <Text bold color={effortColor}>
+                {effort || 'auto'}
+                {p.effort ? ' •' : ''}
+              </Text>
+              <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
+            </Box>
+            <Text>
+              {EFFORTS.map((lv, k) => (
+                <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k]}</Text>
+              ))}
+            </Text>
+          </Box>,
+          effortChord ? (
+            <Text>
+              <Text>{' '}</Text>
+              <Text bold color="#9a9aab">{effortChord}</Text>
+              <Text dimColor>{` ${tr.effortHint} `}</Text>
+            </Text>
+          ) : null,
+        )}
       </Box>
     )
   })

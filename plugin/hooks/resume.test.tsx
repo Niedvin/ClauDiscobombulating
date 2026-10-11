@@ -100,15 +100,15 @@ test('sessions button opens /resume picker', { timeoutMs: 20000 }, async ($, on)
   expect(sent).toEqual([])
 })
 
-test('pane order: timer on top, then Sessions, Resume, Compact', { timeoutMs: 20000 }, async ($, on) => {
+test('pane order: timer on top, then Sessions, Compact, Resume', { timeoutMs: 20000 }, async ($, on) => {
   mock.clock(on)
   const { pane } = await boot($, on, 'Продовжити')
   const s = JSON.stringify(await pane.drawn())
   const at = (w: string) => s.indexOf(w)
   expect(at('⏰')).toBeGreaterThan(-1)
   expect(at('⏰')).toBeLessThan(at('Sessions'))
-  expect(at('Sessions')).toBeLessThan(at('Resume'))
-  expect(at('Resume')).toBeLessThan(at('Compact'))
-  expect(at('Compact')).toBeLessThan(at('Opus'))
+  expect(at('Sessions')).toBeLessThan(at('Compact'))
+  expect(at('Compact')).toBeLessThan(at('Resume'))
+  expect(at('Resume')).toBeLessThan(at('Opus'))
 })
 

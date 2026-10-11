@@ -29,10 +29,11 @@ Mod for Claude Code (console + Claude desktop), plus a sidebar plugin for openco
 
 opencode already has a sidebar; the plugin adds its blocks there, under opencode's own context block:
 
-- OpenCode Go limits (5h, 7d, month) with reset times, last in the sidebar, read every minute from opencode.ai with the Go key opencode already keeps (`auth.json`). No Go subscription → no block.
+- OpenCode Go limits (5h, 7d, month) with reset times, at the bottom of the sidebar, read every minute from opencode.ai with the Go key opencode already keeps (`auth.json`). No Go subscription → no block.
 - Message timer (click or wheel on hours / minutes, click the text to edit it), Sessions, Resume, Compact. Resume and the timer send with the model picked in the prompt.
 - Model (click opens the model list) and Effort, the model variant: ◀ ▶, the wheel over the box, or `ctrl+t` (opencode's own key, shown on the box).
 - Update check: `✦ new vX` under the header; a click downloads the new files, opencode reloads them.
+- Before the first message (opencode's home screen, which has no sidebar) the plugin draws its own panel on the right, same width: Sessions, Model, Effort and the limits. Terminal wider than 120 columns, as opencode's own sidebar.
 
 Not in opencode: Claude limits, cache timer, auto compact.
 
