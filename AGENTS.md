@@ -65,5 +65,5 @@ Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version 
 
 Published as marketplace `ClauDiscobombulating` (repo root has `.claude-plugin/marketplace.json`). Users: `.\install.ps1 -Repo Niedvin/ClauDiscobombulating` — also writes `extraKnownMarketplaces.ClauDiscobombulating` (github source, `autoUpdate: true`) into `settings.json` (backup in `.backups/`); `-Uninstall` removes it. Local install leaves settings alone.
 
-Release: bump `version` in `plugin.json`, commit, push. Installed copies pull it.
+Release: bump `version` in `plugin.json`, commit (`release: X.Y.Z`), push, then `gh release create vX.Y.Z --title "ClauDiscobombulating X.Y.Z" --generate-notes` — one GitHub release per shipped version. Installed copies pull it.
 
