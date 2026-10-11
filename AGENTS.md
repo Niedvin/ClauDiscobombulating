@@ -38,7 +38,9 @@ Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version 
 - Cache hint: console hides it first 5 min idle (`CACHE_SHOW_BELOW`) in the `SessionMode` footer; desktop shows it always in the `AbovePrompt` band (flat dark pills, Box + Text, Compact button, cache pill on the right; `Svg` drew nothing in the footer slot). Then minutes left, then `⚠ Cache Miss`.
 - Cache alert: `left <= ALERT_MIN` (10), once per idle period (`alerted` state). In-app toast + Windows toast + `cache-alert.mp3` via `powershell.exe` (`ALERT_PS`, env-passed text, no double quotes in it). `lastActive` persists in `activeAt` state (survives reload), is restored on resume from `classic.SessionStart` `seconds_since_last_response`, and restarts at every real compaction.
 
-- Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after.
+- Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`, else a 5h wall bucket). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after.
+- ctrl+t cycles effort: band ◀/▶ carry engine actions `pane:previous`/`pane:next` (the engine takes them only with 2+ panes open); the chord lives in the person's `~/.claude/keybindings.json` — 2026-10-11.
+- New version: header compares `pluginVersion` with `latest` (GitHub raw, checked at start and every 6h); the click runs `claude plugin update`, restart applies — 2026-10-11.
 
 ## Runtime files
 

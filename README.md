@@ -22,6 +22,8 @@ Mod for Claude Code (console + Claude desktop). One plugin, mode picks itself by
 - **Language:** Ukrainian when the system language is Ukrainian, English otherwise (`d`, `h`, `m`, `send`, `cancel`, …). Force it with env `CLAUDISCOBOMBULATING_LANG=uk` or `en`.
 - **Limits shared between sessions:** every session shows the freshest limits, not only after its own first reply. Works on Windows, macOS and Linux.
 - Cache alert sound: `plugin/assets/cache-alert.mp3`, installed with the plugin. Windows: system toast + sound. macOS: sound (system player, `afplay`) + in-app toast. Other systems: in-app toast only.
+- **ctrl+t cycles effort** (console): the band's effort ◀/▶ carry the engine actions `pane:previous` / `pane:next`, so the chord itself lives in `~/.claude/keybindings.json` — this setup binds `ctrl+t` / `ctrl+shift+t` there. The engine takes those actions over only while 2+ panes are open; with this mod's pane up, the wheel does it.
+- **Update check**: the pane header reads the released version from GitHub at start and every 6h. When a newer release exists it draws `v1.1.7 ✦ нова vX`; a click runs `claude plugin update`. Restart applies.
 
 ## Install
 

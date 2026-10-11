@@ -112,15 +112,15 @@ test('no cache alert while a compact is within the last 5 turns', { timeoutMs: 3
   await clock.advance(51 * 60000)
   expect(runs.length).toBe(0)
 
-  for (const id of ['t2', 't3']) {
+  for (const id of ['t2', 't3', 't4', 't5']) {
     await $.turn.start({ text: 'hi', turnId: id })
     await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: id, reason: 'answer' })
   }
   await clock.advance(51 * 60000)
   expect(runs.length).toBe(0)
 
-  await $.turn.start({ text: 'hi', turnId: 't4' })
-  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't4', reason: 'answer' })
+  await $.turn.start({ text: 'hi', turnId: 't6' })
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't6', reason: 'answer' })
   await clock.advance(51 * 60000)
   expect(runs.length).toBe(1)
 })

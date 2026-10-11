@@ -25,6 +25,8 @@ const CACHE_TTL_MS = 3600000
 const CACHE_SHOW_BELOW = 55
 const ALERT_MIN = 10
 const AUTO_COMPACT_AT = 99
+// a release check redraws the header at most every 6h — 2026-10-11
+const VERSION_CHECK_MS = 6 * 3600000
 const COMPACT_GRACE_MS = 600000
 const COMPACT_QUIET_MSGS = 5
 const ALERT_TITLE = 'ClauDiscobombulating'
@@ -51,6 +53,9 @@ const UK = {
   toPane: 'колесо ⇥',
   paneOpen: 'Панель відкрита.',
   paneWaits: 'Панель чекає на ширший термінал.',
+  updateAvail: 'нова',
+  updateDone: (v: string) => `Оновлено до v${v}. Перезапусти сесію.`,
+  updateFailed: 'Оновлення не вдалося',
   placeholder: 'текст повідомлення',
   cancelBtn: '✕  скасувати',
   sendBtn: '✓  відправити',
@@ -75,6 +80,9 @@ const EN: typeof UK = {
   toPane: 'wheel ⇥',
   paneOpen: 'Pane opened.',
   paneWaits: 'Pane waits for a wider terminal.',
+  updateAvail: 'new',
+  updateDone: (v: string) => `Updated to v${v}. Restart the session.`,
+  updateFailed: 'Update failed',
   placeholder: 'message text',
   cancelBtn: '✕  cancel',
   sendBtn: '✓  send',
@@ -98,6 +106,7 @@ const compactedAt = atom({ plugin: 'ClauDiscobombulating', key: 'compactedAt' } 
 const sinceCompact = atom({ plugin: 'ClauDiscobombulating', key: 'sinceCompact' } as const, COMPACT_QUIET_MSGS)
 const context = atom({ plugin: 'ClauDiscobombulating', key: 'context' } as const, { tokens: 0, window: 0, percent: -1 } as Context)
 const log = atom({ plugin: 'ClauDiscobombulating', key: 'log' } as const, [] as string[])
+const latest = atom({ plugin: 'ClauDiscobombulating', key: 'latest' } as const, '')
 
 const modelIndex = (id: string) => MODELS.findIndex(m => id.toLowerCase().includes(m.family))
 const labels: Record<string, string> = {}
@@ -111,6 +120,7 @@ function modelLabel(id: string) {
   return versionLabel(id) ?? (fam ? labels[fam] ?? cap(fam) : id || '…')
 }
 const isLevel = (v: unknown): v is string => typeof v === 'string' && EFFORTS.includes(v)
+const REFUSED = /Not applied|Failed|Unknown|Usage:/
 const within = (row: number, [a, b]: number[]) => row >= a && row <= b
 const wrap = (i: number, n: number) => ((i % n) + n) % n
 const tone = (p: number) => (p >= 90 ? '#ef5b5b' : p >= 70 ? '#f0b429' : '#3fbf8f')
@@ -118,7 +128,9 @@ const shortName = (kind: string) => ({ five_hour: `5${tr.hour}`, seven_day: `7${
 
 function resetIn(iso?: string, now = Date.now()) {
   if (!iso) return ''
-  const m = Math.max(0, Math.round((Date.parse(iso) - now) / 60000))
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return ''
+  const m = Math.max(0, Math.round((t - now) / 60000))
   if (m >= 1440) return `${Math.floor(m / 1440)}${tr.day} ${Math.floor((m % 1440) / 60)}${tr.hour}`
   return m >= 60 ? `${Math.floor(m / 60)}${tr.hour} ${m % 60}${tr.min}` : `${m}${tr.min}`
 }
@@ -200,7 +212,9 @@ async function alertCache($: EngineInterface) {
   $.ui.toast(tr.alertBody)
   if ((await $.env.get('OS').catch(() => undefined)) === 'Windows_NT') {
     const sound = encodeURI(`file:///${$.plugin.root.replace(/\\/g, '/')}/assets/cache-alert.mp3`)
-    const env = { PB_SOUND: sound, PB_TITLE: ALERT_TITLE, PB_BODY: tr.alertBody }
+    // the PS script single-quotes these: an apostrophe doubles — 2026-10-11
+    const ps = (s: string) => s.replace(/'/g, "''")
+    const env = { PB_SOUND: sound, PB_TITLE: ps(ALERT_TITLE), PB_BODY: ps(tr.alertBody) }
     const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ALERT_PS]
     await $.process.run(argv, { env, timeoutMs: 20000 }).catch(err => note($, `alert failed ${String(err)}`))
     return
@@ -270,14 +284,16 @@ async function compact($: EngineInterface): Promise<boolean> {
   const isSwitch = isMiss && fam?.family !== 'haiku'
   // medium on a miss: the summary decides what the context keeps, so it is worth the thinking — 2026-10-10
   const target = isMiss ? 'medium' : 'low'
+  // an unknown effort is left alone: nothing to set, nothing to restore — 2026-10-11
+  const changed = isLevel(effort) && effort !== target
   try {
     if (isSwitch) {
       $.ui.toast(tr.compactOnHaiku)
-      await $.command.run({ command: 'model', args: 'haiku' })
+      await runInjected($, 'model', 'haiku')
     }
     // effort goes after a model switch: the app re-sends its own at every switch — 2026-10-10
-    if (effort !== target) await $.command.run({ command: 'effort', args: target })
-    await $.command.run({ command: 'compact' })
+    if (changed) await runInjected($, 'effort', target)
+    await runInjected($, 'compact')
     const doneAt = await $.clock.now()
     await update($, compactedAt, () => doneAt)
     await update($, sinceCompact, () => 0)
@@ -291,11 +307,11 @@ async function compact($: EngineInterface): Promise<boolean> {
     return false
   } finally {
     if (isSwitch) {
-      await $.command.run({ command: 'model', args: fam?.id ?? model }).catch(() => undefined)
+      await runInjected($, 'model', fam?.id ?? model).catch(() => undefined)
       await update($, live, l => ({ ...l, model }))
     }
-    if (isLevel(effort) && (isSwitch || effort !== target)) {
-      await $.command.run({ command: 'effort', args: effort }).catch(() => undefined)
+    if (isLevel(effort) && (isSwitch || changed)) {
+      await runInjected($, 'effort', effort).catch(() => undefined)
       await update($, live, l => ({ ...l, effort }))
     }
   }
@@ -313,7 +329,8 @@ async function autoCompact($: EngineInterface) {
   isCompacting = true
   try {
     if (now - (await read($, compactedAt)) < COMPACT_GRACE_MS) return
-    const key = five.resetsAt ?? 'none'
+    // no resetsAt: a 5h wall bucket still allows one compact per window — 2026-10-11
+    const key = five.resetsAt ?? `t${Math.floor(now / 18000000)}`
     if ((await read($, compactedFor)) === key) return
     $.ui.toast(tr.autoCompact(Math.floor(five.percentUsed)))
     if (isBusy && turnId) {
@@ -349,67 +366,78 @@ async function resume($: EngineInterface, surface: string) {
   await $.prompt.submit({ text, asUser: true })
 }
 
+let polling = false
 async function poll($: EngineInterface) {
-  if (isFull) await fireTimer($)
-  const tick = await $.clock.now()
-  if (!lastActive) lastActive = await read($, activeAt)
-  if (isBusy) lastActive = tick
-  const left = cacheMinutes(tick)
-  if (left !== (await read($, cacheLeft))) await update($, cacheLeft, () => left)
-  const quiet = await alertQuiet($)
-  if (!quiet && left > 0 && left <= ALERT_MIN && (await read($, alerted)) !== lastActive) {
-    await update($, alerted, () => lastActive)
-    void alertCache($)
-  }
-  await adoptShared($).catch(() => undefined)
-  const u = await $.session.usage().catch(() => undefined)
-  const c = u?.context
-  if (c) {
-    const fresh: Context = { tokens: c.tokens ?? 0, window: c.window ?? 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : c.tokens && c.window ? Math.round((c.tokens / c.window) * 100) : -1 }
-    const seen = await read($, context)
-    if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent) await update($, context, () => fresh)
-  }
-  const now = Date.now()
-  const ls = await read($, limits)
-  if (ls.some(l => l.resetsAt && Date.parse(l.resetsAt) <= now)) {
-    // the API reports a new window only with the next response, so zero it locally — 2026-10-02
-    await update($, limits, xs => xs.map(l => (l.resetsAt && Date.parse(l.resetsAt) <= now ? { kind: l.kind, percentUsed: 0 } : l)))
-  }
-  void autoCompact($).catch(err => note($, `auto compact failed ${String(err)}`))
-  if (!isFull) return
-  const up = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced && x.isShown)
-  if (up !== (await read($, paneUp))) await update($, paneUp, () => up)
-  const model = await $.session.model()
-  const raw = ((await $.settings.read({ source: 'flag' })) as { effortLevel?: unknown }).effortLevel
-  const flagEffort = typeof raw === 'string' ? raw : ''
-  const seen = await read($, flag)
-  const p = await read($, pending)
-  const cur = await read($, live)
-  let nextLive = cur
-  const known = versionLabel(model)
-  const fam = MODELS[modelIndex(model)]?.family
-  if (known && fam && labels[fam] !== known) {
-    labels[fam] = known
-    await $.store.set(`label:${fam}`, known).catch(() => undefined)
-  }
-  if (!p.model && model && model !== cur.model) {
-    nextLive = { ...nextLive, model }
-    // app re-sends its own effort on every model switch — 2026-10-02
-    if (cur.model) nextLive = { ...nextLive, effort: flagEffort || (await savedEffort($, model)) || cur.effort }
-  }
-  if (flagEffort !== seen) {
-    await update($, flag, () => flagEffort)
-    if (seen !== UNREAD || !cur.effort) {
-      nextLive = { ...nextLive, effort: flagEffort }
-      if (p.effort) await update($, pending, q => ({ ...q, effort: '' }))
-      await note($, `app effort → ${flagEffort || 'unset'}`)
+  // a tick is skipped rather than overlapped: the reads below are not atomic together — 2026-10-11
+  if (polling) return
+  polling = true
+  try {
+    if (isFull) await fireTimer($)
+    const tick = await $.clock.now()
+    if (!lastActive) lastActive = await read($, activeAt)
+    if (isBusy) lastActive = tick
+    const left = cacheMinutes(tick)
+    if (left !== (await read($, cacheLeft))) await update($, cacheLeft, () => left)
+    const quiet = await alertQuiet($)
+    if (!quiet && left > 0 && left <= ALERT_MIN && (await read($, alerted)) !== lastActive) {
+      await update($, alerted, () => lastActive)
+      void alertCache($)
     }
+    if (!lastVersionCheck || tick - lastVersionCheck > VERSION_CHECK_MS) void checkVersion($).catch(() => undefined)
+    await adoptShared($).catch(() => undefined)
+    const u = await $.session.usage().catch(() => undefined)
+    const c = u?.context
+    if (c) {
+      const fresh: Context = { tokens: c.tokens ?? 0, window: c.window ?? 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : c.tokens && c.window ? Math.round((c.tokens / c.window) * 100) : -1 }
+      const seen = await read($, context)
+      if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent) await update($, context, () => fresh)
+    }
+    const now = Date.now()
+    const ls = await read($, limits)
+    if (ls.some(l => l.resetsAt && Date.parse(l.resetsAt) <= now)) {
+      // the API reports a new window only with the next response, so zero it locally — 2026-10-02
+      await update($, limits, xs => xs.map(l => (l.resetsAt && Date.parse(l.resetsAt) <= now ? { kind: l.kind, percentUsed: 0 } : l)))
+    }
+    void autoCompact($).catch(err => note($, `auto compact failed ${String(err)}`))
+    if (!isFull) return
+    const up = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced && x.isShown)
+    if (up !== (await read($, paneUp))) await update($, paneUp, () => up)
+    const model = await $.session.model()
+    const raw = ((await $.settings.read({ source: 'flag' })) as { effortLevel?: unknown }).effortLevel
+    const flagEffort = typeof raw === 'string' ? raw : ''
+    const seen = await read($, flag)
+    const p = await read($, pending)
+    const cur = await read($, live)
+    let nextLive = cur
+    const known = versionLabel(model)
+    const fam = MODELS[modelIndex(model)]?.family
+    if (known && fam && labels[fam] !== known) {
+      labels[fam] = known
+      await $.store.set(`label:${fam}`, known).catch(() => undefined)
+    }
+    if (!p.model && model && model !== cur.model) {
+      nextLive = { ...nextLive, model }
+      // app re-sends its own effort on every model switch — 2026-10-02
+      if (cur.model) nextLive = { ...nextLive, effort: flagEffort || (await savedEffort($, model)) || cur.effort }
+    }
+    if (flagEffort !== seen) {
+      await update($, flag, () => flagEffort)
+      if (seen !== UNREAD || !cur.effort) {
+        nextLive = { ...nextLive, effort: flagEffort }
+        if (p.effort) await update($, pending, q => ({ ...q, effort: '' }))
+        await note($, `app effort → ${flagEffort || 'unset'}`)
+      }
+    }
+    if (!nextLive.effort) {
+      const saved = await savedEffort($, model)
+      if (saved) nextLive = { ...nextLive, effort: saved }
+    }
+    if (nextLive !== cur) await update($, live, () => nextLive)
+  } catch (err) {
+    await note($, `poll failed ${String(err)}`)
+  } finally {
+    polling = false
   }
-  if (!nextLive.effort) {
-    const saved = await savedEffort($, model)
-    if (saved) nextLive = { ...nextLive, effort: saved }
-  }
-  if (nextLive !== cur) await update($, live, () => nextLive)
 }
 
 let isFull = false
@@ -450,6 +478,8 @@ async function adoptShared($: EngineInterface) {
 }
 let effortTimer: Timer | undefined
 let modelTimer: Timer | undefined
+let pollEvery: Timer | undefined
+let injected = 0
 
 async function applyModel($: EngineInterface) {
   const p = await read($, pending)
@@ -457,7 +487,7 @@ async function applyModel($: EngineInterface) {
   const cur = await read($, live)
   if (p.model !== cur.model) {
     try {
-      const r = await $.command.run({ command: 'model', args: p.model })
+      const r = await runInjected($, 'model', p.model)
       const text = r.text ?? ''
       if (!/Set model to|Kept model as/.test(text)) $.ui.toast(text.slice(0, 160) || `ClauDiscobombulating: /model ${p.model} failed`)
       await note($, `/model ${p.model} → ${text.slice(0, 90)}`)
@@ -479,9 +509,9 @@ async function applyEffort($: EngineInterface) {
   const cur = await read($, live)
   if (p.effort !== cur.effort) {
     try {
-      const r = await $.command.run({ command: 'effort', args: p.effort })
+      const r = await runInjected($, 'effort', p.effort)
       const text = r.text ?? ''
-      const isRefused = /Not applied|Failed|Unknown|Usage:/.test(text)
+      const isRefused = REFUSED.test(text)
       const level = parseEffort(text) ?? (isRefused ? undefined : p.effort)
       if (level) await update($, live, l => ({ ...l, effort: level }))
       else $.ui.toast(text.slice(0, 160))
@@ -519,12 +549,23 @@ function parseEffort(text: string) {
   return isLevel(level) ? level : undefined
 }
 
+// runs a /model or /effort the mod itself chose; onCommand leaves those unnoted — 2026-10-11
+async function runInjected($: EngineInterface, command: string, args?: string) {
+  injected += 1
+  try {
+    return await $.command.run({ command, args })
+  } finally {
+    injected -= 1
+  }
+}
+
 const onCommand: Hook<'command.run'> = async ($, e, next) => {
   if (!isFull) return next(e)
   const r = await next(e)
+  if (injected > 0) return r
   const text = r.text ?? ''
   if (e.command === 'effort') {
-    const level = parseEffort(text) ?? (isLevel(e.args) && !/Not applied|Failed/.test(text) ? e.args : undefined)
+    const level = parseEffort(text) ?? (isLevel(e.args) && !REFUSED.test(text) ? e.args : undefined)
     if (level) await update($, live, l => ({ ...l, effort: level }))
   } else {
     const model = await $.session.model()
@@ -536,11 +577,14 @@ const onCommand: Hook<'command.run'> = async ($, e, next) => {
 
 // the desktop app drives the CLI headless: session.start says surface null, the app shows up later as an attach — 2026-10-06
 let pluginVersion = '?'
+let pluginRepo = 'Niedvin/ClauDiscobombulating'
+let lastVersionCheck = 0
 // manifest, so a version bump never drifts from the header — 2026-10-11
 async function loadVersion($: EngineInterface) {
   for (const p of [`${$.plugin.root}/.claude-plugin/plugin.json`, `${$.plugin.root}/plugin.json`]) {
     try {
-      const m = JSON.parse(await $.fs.read(p)) as { version?: unknown }
+      const m = JSON.parse(await $.fs.read(p)) as { version?: unknown; repository?: unknown }
+      if (typeof m.repository === 'string') pluginRepo = m.repository
       if (typeof m.version === 'string') {
         pluginVersion = m.version
         return
@@ -549,10 +593,46 @@ async function loadVersion($: EngineInterface) {
   }
 }
 
+function newerThan(a: string, b: string) {
+  const x = a.split('.').map(Number)
+  const y = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
+  }
+  return false
+}
+
+async function checkVersion($: EngineInterface) {
+  lastVersionCheck = Date.now()
+  const repo = pluginRepo.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')
+  if (!repo.includes('/')) return
+  const r = await $.http.fetch(`https://raw.githubusercontent.com/${repo}/main/plugin/.claude-plugin/plugin.json`)
+  if (!r.ok) return
+  const m = JSON.parse(r.text) as { version?: unknown }
+  if (typeof m.version === 'string' && newerThan(m.version, pluginVersion)) await update($, latest, () => m.version)
+}
+
+// the click on the header's new-version line: pull the release in, restart applies — 2026-10-11
+async function doUpdate($: EngineInterface) {
+  try {
+    const v = await read($, latest)
+    const args = ['plugin', 'update', `${PANE}@${PANE}`, '--scope', 'user']
+    const os = await $.env.get('OS').catch(() => undefined)
+    const argv = os === 'Windows_NT' ? ['cmd.exe', '/c', `claude ${args.join(' ')}`] : ['claude', ...args]
+    await $.process.run(argv, { timeoutMs: 180000 })
+    await update($, latest, () => '')
+    $.ui.toast(tr.updateDone(v))
+  } catch (err) {
+    $.ui.toast(tr.updateFailed)
+    await note($, `update failed ${String(err)}`)
+  }
+}
+
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
   await loadVersion($).catch(() => undefined)
+  void checkVersion($).catch(() => undefined)
   await $.command.register({ name: 'ClauDiscobombulating', description: 'Open the model and effort pane' })
   await openPane($, why)
   for (const m of MODELS) {
@@ -576,7 +656,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await applyLang($).catch(err => note($, `lang failed ${String(err)}`))
-    $.clock.every(1000, () => void poll($))
+    pollEvery?.cancel()
+    pollEvery = $.clock.every(1000, () => void poll($))
     try {
       const u = await $.session.usage()
       await update($, limits, () => u.rateLimits.map(l => ({ ...l })))
@@ -642,7 +723,6 @@ export const register: Register = on => {
     turnId = e.turnId
     lastActive = await $.clock.now()
     await update($, activeAt, () => lastActive)
-    await countSinceCompact($)
     return next(e)
   })
 
@@ -764,7 +844,7 @@ export const register: Register = on => {
               <Button key="m-next" plain dimColor label="▶" onPress={() => pick($, 'model', 1)} />
             </Box>
             <Box flexDirection="row" alignItems="center" gap={1} borderStyle="round" borderColor={effortColor} paddingX={1}>
-              <Button key="e-prev" plain dimColor label="◀" onPress={() => pick($, 'effort', -1)} />
+              <Button key="e-prev" plain dimColor label="◀" action="pane:previous" onPress={() => pick($, 'effort', -1)} />
               <Text bold color={effortColor}>
                 {effort || 'auto'}
                 {p.effort ? ' •' : ''}
@@ -774,7 +854,7 @@ export const register: Register = on => {
                   <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k]}</Text>
                 ))}
               </Text>
-              <Button key="e-next" plain dimColor label="▶" onPress={() => pick($, 'effort', 1)} />
+              <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
             </Box>
           </Box>
         )}
@@ -796,14 +876,15 @@ export const register: Register = on => {
   })
 
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
-    const row = e.pointer?.row
+    // pointer rows count from the window's first row, the zones from the tree's — 2026-10-11
+    const row = e.pointer?.row === undefined ? undefined : e.pointer.row + e.offset
     if (row === undefined || e.origin.kind !== 'person') return next(e)
     const zone = within(row, paneRows.model) ? 'model' : within(row, paneRows.effort) ? 'effort' : within(row, paneRows.timer) ? 'timer' : ''
     if (!zone) return next(e)
     const dir = e.by < 0 ? 1 : -1
     // one wheel notch arrives as several events on Windows (3 lines per notch) — 2026-10-02
     const now = Date.now()
-    if (now - lastWheel < WHEEL_GAP_MS) return {}
+    if (now - lastWheel < WHEEL_GAP_MS) return next(e)
     lastWheel = now
     if (zone === 'model') await pick($, 'model', dir).catch(() => undefined)
     else if (zone === 'effort') await pick($, 'effort', dir).catch(() => undefined)
@@ -829,6 +910,7 @@ export const register: Register = on => {
     // the timer follows the 4-row header and its 1-row gap — 2026-10-11
     paneRows = { timer: [5, 11], model: [stack + 12, stack + 15], effort: [stack + 17, stack + 20] }
     paneWidth = width
+    const latestV = await read($, latest)
     const alarm = await read($, timer)
     const d = await shownDraft($)
     const isArmed = alarm.at > 0
@@ -842,7 +924,14 @@ export const register: Register = on => {
             <Text bold color="#ececf1">
               {$.plugin.name}
             </Text>
-            <Text dimColor>{`v${pluginVersion}`}</Text>
+            {latestV && newerThan(latestV, pluginVersion) ? (
+              <Box flexDirection="row" justifyContent="center">
+                <Text dimColor>{`v${pluginVersion}`}</Text>
+                <Button key="update" plain label={` ${tr.updateAvail} v${latestV}`} onPress={() => doUpdate($)} />
+              </Box>
+            ) : (
+              <Text dimColor>{`v${pluginVersion}`}</Text>
+            )}
           </Box>
           <Box height={1} />
           <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} backgroundColor="black" width={width}>
