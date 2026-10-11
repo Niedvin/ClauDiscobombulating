@@ -681,6 +681,9 @@ let countTimer: Timer | undefined
 
 const ctxTarget = () => ctxKnown + Math.round(ctxStreamed + ctxPending)
 
+// a real usage landing under the live guess is held till the turn ends: the count never drops while work runs — 2026-10-12
+const countGoal = () => (isBusy ? Math.max(ctxTarget(), shownN) : ctxTarget())
+
 // ≈4 chars a token in English, ≈2 in Cyrillic; the step's stop chunk replaces the guess — 2026-10-11
 function estTokens(s: string) {
   let n = 0
@@ -721,12 +724,12 @@ function measured(tokens: number) {
 }
 
 function kickCount($: EngineInterface) {
-  if (countOn && !countTimer && (shownN !== ctxTarget() || shownPrev !== shownN)) countTimer = $.clock.every(COUNT_FRAME_MS, () => void countFrame($))
+  if (countOn && !countTimer && (shownN !== countGoal() || shownPrev !== shownN)) countTimer = $.clock.every(COUNT_FRAME_MS, () => void countFrame($))
 }
 
 async function countFrame($: EngineInterface) {
   if (isFraming) return
-  const to = ctxTarget()
+  const to = countGoal()
   if (!countOn || (shownN === to && shownPrev === to)) {
     countTimer?.cancel()
     countTimer = undefined
@@ -956,6 +959,8 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) return next(e)
     isBusy = false
+    // the held count settles to the real one only now that the turn is over — 2026-10-12
+    kickCount($)
     lastActive = await $.clock.now()
     await update($, activeAt, () => lastActive)
     await countSinceCompact($)
