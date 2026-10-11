@@ -40,7 +40,7 @@ Name + version header pinned top (rows 0..3), timer below (rows 5..11). Version 
 
 - Auto compact: `five_hour` ≥ 99% (`AUTO_COMPACT_AT`) → abort running turn (`$.turn.abort`), run `compact()`. Once per 5h window (`compactedFor` state = `resetsAt`, else a 5h wall bucket). Check cadence by last seen %: <75 → 5 min, <90 → 1 min, <95 → 30 s, else 1 s. Checked in `poll`, both surfaces. No auto-resume after.
 - ctrl+t cycles effort: band ◀/▶ carry engine actions `pane:previous`/`pane:next` (the engine takes them only with 2+ panes open); the chord lives in the person's `~/.claude/keybindings.json` — 2026-10-11.
-- New version: header compares `pluginVersion` with `latest` (GitHub raw, checked at start and every 6h); the click runs `claude plugin update`, restart applies — 2026-10-11.
+- New version: header compares `pluginVersion` with `latest` (GitHub raw, checked at session start); the click runs `claude plugin update`, restart applies — 2026-10-11.
 
 ## Runtime files
 

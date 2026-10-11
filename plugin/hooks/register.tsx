@@ -25,8 +25,6 @@ const CACHE_TTL_MS = 3600000
 const CACHE_SHOW_BELOW = 55
 const ALERT_MIN = 10
 const AUTO_COMPACT_AT = 99
-// a release check redraws the header at most every 6h — 2026-10-11
-const VERSION_CHECK_MS = 6 * 3600000
 const COMPACT_GRACE_MS = 600000
 const COMPACT_QUIET_MSGS = 5
 const ALERT_TITLE = 'ClauDiscobombulating'
@@ -383,7 +381,6 @@ async function poll($: EngineInterface) {
       await update($, alerted, () => lastActive)
       void alertCache($)
     }
-    if (!lastVersionCheck || tick - lastVersionCheck > VERSION_CHECK_MS) void checkVersion($).catch(() => undefined)
     await adoptShared($).catch(() => undefined)
     const u = await $.session.usage().catch(() => undefined)
     const c = u?.context
@@ -578,7 +575,6 @@ const onCommand: Hook<'command.run'> = async ($, e, next) => {
 // the desktop app drives the CLI headless: session.start says surface null, the app shows up later as an attach — 2026-10-06
 let pluginVersion = '?'
 let pluginRepo = 'Niedvin/ClauDiscobombulating'
-let lastVersionCheck = 0
 // manifest, so a version bump never drifts from the header — 2026-10-11
 async function loadVersion($: EngineInterface) {
   for (const p of [`${$.plugin.root}/.claude-plugin/plugin.json`, `${$.plugin.root}/plugin.json`]) {
@@ -603,7 +599,6 @@ function newerThan(a: string, b: string) {
 }
 
 async function checkVersion($: EngineInterface) {
-  lastVersionCheck = Date.now()
   const repo = pluginRepo.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')
   if (!repo.includes('/')) return
   const r = await $.http.fetch(`https://raw.githubusercontent.com/${repo}/main/plugin/.claude-plugin/plugin.json`)
