@@ -29,12 +29,12 @@ Mod for Claude Code (console + Claude desktop), plus a sidebar plugin for openco
 
 opencode already has a sidebar; the plugin adds its blocks there, under opencode's own context block:
 
-- Claude limits (5h, 7d), read from what Claude Code last saw (opencode gets no limit data of its own); the age shows when it is 5+ min old.
-- Cache timer, only after a reply that used the cache. Alert only for a cache of 20+ min, at 1/6 of it left.
-- Message timer (click or wheel on hours / minutes, click the text to edit it), Sessions, Resume, Compact.
+- OpenCode Go limits (5h, 7d, month) with reset times, read every minute from opencode.ai with the Go key opencode already keeps (`auth.json`). No Go subscription → no block.
+- Message timer (click or wheel on hours / minutes, click the text to edit it), Sessions, Resume, Compact. Resume and the timer send with the model picked in the prompt.
 - Model (click opens the model list) and variant ◀ ▶ (= effort). `ctrl+t` cycles it, opencode's own key.
-- Auto compact at 99% of the 5h limit, Anthropic models only, same rules as above.
-- Update check: `new vX` in the header; a click downloads the new files, opencode reloads them.
+- Update check: `✦ new vX` under the header; a click downloads the new files, opencode reloads them.
+
+Not in opencode: Claude limits, cache timer, auto compact.
 
 Files: `~/.config/opencode/plugins/claudiscobombulating/` (`tui.tsx`, `plugin.json`). The install script asks for it when opencode is found.
 
