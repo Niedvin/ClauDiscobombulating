@@ -139,7 +139,9 @@ function setup(context: Ctx) {
     if (typeof m.version === "string") version = m.version
     if (typeof m.repository === "string") repo = m.repository.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "")
   } catch {}
-  const raw = (file: string) => `https://raw.githubusercontent.com/${repo}/main/${file}`
+  // raw.githubusercontent.com serves a 5 min old copy after a push; the contents API is fresh — 2026-10-11
+  const fromMain = (file: string) =>
+    fetch(`https://api.github.com/repos/${repo}/contents/${file}?ref=main`, { headers: { Accept: "application/vnd.github.raw", "User-Agent": "opencode" } })
 
   void detectUk().then(isUk => setTr(isUk ? UK : EN))
 
@@ -242,7 +244,7 @@ function setup(context: Ctx) {
   async function selfUpdate() {
     const v = mem.latest
     try {
-      const [code, manifest] = await Promise.all([fetch(raw("opencode/tui.tsx")), fetch(raw("plugin/.claude-plugin/plugin.json"))])
+      const [code, manifest] = await Promise.all([fromMain("opencode/tui.tsx"), fromMain("plugin/.claude-plugin/plugin.json")])
       if (!code.ok || !manifest.ok) throw new Error(`HTTP ${code.status}/${manifest.status}`)
       const src = await code.text()
       const json = await manifest.text()
@@ -261,7 +263,7 @@ function setup(context: Ctx) {
     }
   }
 
-  void fetch(raw("plugin/.claude-plugin/plugin.json"))
+  void fromMain("plugin/.claude-plugin/plugin.json")
     .then(r => (r.ok ? (r.json() as Promise<{ version?: unknown }>) : undefined))
     .then(m => {
       const v = m?.version

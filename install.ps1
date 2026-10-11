@@ -67,11 +67,15 @@ $hasOpenCode = [bool](Get-Command opencode -ErrorAction SilentlyContinue) -or (T
 
 function Install-OpenCode {
   if (-not $PSCmdlet.ShouldProcess($OcDir, 'install opencode plugin')) { return }
+  # raw.githubusercontent.com serves a 5 min old copy after a push; the marketplace clone is fresh — 2026-10-11
+  $m = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json) | Where-Object { $_.name -eq $Market }
+  $src = @($m.installLocation, $m.path) | Where-Object { $_ -and (Test-Path (Join-Path $_ 'opencode/tui.tsx')) } | Select-Object -First 1
+  if (-not $src -and -not $Repo) { $src = $Root }
   New-Item -ItemType Directory -Force $OcDir | Out-Null
   foreach ($f in @(@('tui.tsx', 'opencode/tui.tsx'), @('plugin.json', 'plugin/.claude-plugin/plugin.json'))) {
     $tmp = Join-Path $OcDir "$($f[0]).tmp"
-    if ($Repo) { Invoke-WebRequest "https://raw.githubusercontent.com/$Repo/main/$($f[1])" -OutFile $tmp -UseBasicParsing }
-    else { Copy-Item (Join-Path $Root $f[1]) $tmp }
+    if ($src) { Copy-Item (Join-Path $src $f[1]) $tmp }
+    else { Invoke-WebRequest "https://api.github.com/repos/$Repo/contents/$($f[1])?ref=main" -Headers @{ Accept = 'application/vnd.github.raw' } -OutFile $tmp -UseBasicParsing }
     if ((Get-Item $tmp).Length -eq 0) { throw "$($f[0]) is empty" }
     Move-Item $tmp (Join-Path $OcDir $f[0]) -Force
   }

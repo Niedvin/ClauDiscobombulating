@@ -13,10 +13,16 @@ OC_DIR="$OC_BASE/opencode/plugins/claudiscobombulating"
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found in PATH" >&2; exit 1; }
 
 install_opencode() {
+  # raw.githubusercontent.com serves a 5 min old copy after a push; the marketplace clone is fresh — 2026-10-11
+  local clone="$CONFIG/plugins/marketplaces/$MARKET"
   mkdir -p "$OC_DIR"
   for pair in tui.tsx:opencode/tui.tsx plugin.json:plugin/.claude-plugin/plugin.json; do
     local name="${pair%%:*}" src="${pair#*:}"
-    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$src" -o "$OC_DIR/$name.tmp"
+    if [ -s "$clone/$src" ]; then
+      cp "$clone/$src" "$OC_DIR/$name.tmp"
+    else
+      curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$src?ref=main" -o "$OC_DIR/$name.tmp"
+    fi
     [ -s "$OC_DIR/$name.tmp" ] || { echo "$name is empty" >&2; exit 1; }
     mv -f "$OC_DIR/$name.tmp" "$OC_DIR/$name"
   done
