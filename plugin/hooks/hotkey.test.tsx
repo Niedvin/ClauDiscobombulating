@@ -15,7 +15,7 @@ function stub(on: any, placed: boolean) {
   on('ui.panes', () => ({ value: placed ? [{ id: 'ClauDiscobombulating', isPlaced: true, isShown: true }] : [] }))
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('fs.read', (_$: any, e: any, next: any) =>
-    e.path.endsWith('keybindings.json') ? { value: JSON.stringify({ bindings: [{ context: 'Global', bindings: { 'ctrl+t': 'pane:next' } }] }) } : next(e),
+    e.path.endsWith('keybindings.json') ? { value: JSON.stringify({ bindings: [{ context: 'Global', bindings: { 'alt+m': 'pane:next', 'alt+shift+m': 'pane:previous', 'alt+e': 'chat:increaseEffort', 'alt+shift+e': 'chat:decreaseEffort' } }] }) } : next(e),
   )
   on('command.run', (_$: any, e: any) => {
     ran.push(`${e.command} ${e.args ?? ''}`.trim())
@@ -24,7 +24,7 @@ function stub(on: any, placed: boolean) {
   return ran
 }
 
-test('band drawn before full mode redraws with the ctrl+t effort buttons', { timeoutMs: 20000 }, async ($, on) => {
+test('band drawn before full mode redraws with the alt+m model and alt+e effort buttons', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   stub(on, false)
   on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => {
@@ -35,21 +35,27 @@ test('band drawn before full mode redraws with the ctrl+t effort buttons', { tim
   expect(await band.find({ key: 'e-next' })).toBeUndefined()
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.advance(1100)
-  expect(JSON.stringify(await band.find({ key: 'e-next' }))).toContain('pane:next')
-  expect(JSON.stringify(await band.find({ key: 'e-prev' }))).toContain('pane:previous')
-  expect(JSON.stringify(await band.drawn())).toContain('"ctrl+t"')
+  expect(JSON.stringify(await band.find({ key: 'm-next' }))).toContain('pane:next')
+  expect(JSON.stringify(await band.find({ key: 'm-prev' }))).toContain('pane:previous')
+  expect(JSON.stringify(await band.find({ key: 'e-next' }))).toContain('chat:increaseEffort')
+  expect(JSON.stringify(await band.find({ key: 'e-prev' }))).toContain('chat:decreaseEffort')
+  expect(JSON.stringify(await band.drawn())).toContain('"alt+m"')
+  expect(JSON.stringify(await band.drawn())).toContain('"alt+e"')
 })
 
-test('open pane carries the ctrl+t effort buttons', { timeoutMs: 20000 }, async ($, on) => {
+test('open pane carries the alt+m model and alt+e effort buttons', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const ran = stub(on, true)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.advance(1100)
   const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE })
-  expect(JSON.stringify(await pane.find({ key: 'e-next' }))).toContain('pane:next')
-  expect(JSON.stringify(await pane.find({ key: 'e-prev' }))).toContain('pane:previous')
+  expect(JSON.stringify(await pane.find({ key: 'm-next' }))).toContain('pane:next')
+  expect(JSON.stringify(await pane.find({ key: 'm-prev' }))).toContain('pane:previous')
+  expect(JSON.stringify(await pane.find({ key: 'e-next' }))).toContain('chat:increaseEffort')
+  expect(JSON.stringify(await pane.find({ key: 'e-prev' }))).toContain('chat:decreaseEffort')
   expect(JSON.stringify(await pane.drawn())).toContain(' to change')
-  expect(JSON.stringify(await pane.drawn())).toContain('"ctrl+t"')
+  expect(JSON.stringify(await pane.drawn())).toContain('"alt+m"')
+  expect(JSON.stringify(await pane.drawn())).toContain('"alt+e"')
   await pane.press({ key: 'e-next' })
   await clock.advance(800)
   expect(ran).toContain('effort xhigh')

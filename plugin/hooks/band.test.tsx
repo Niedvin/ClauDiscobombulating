@@ -77,3 +77,37 @@ test('desktop compact button: effort low, compact, effort back', { timeoutMs: 20
   expect(ran).toEqual(['effort low', 'compact', 'effort xhigh'])
 })
 
+test('resumed session before a response: context from the local estimate', { timeoutMs: 20000 }, async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('session.usage', (_$: any, e: any) => ({ value: {
+    startedAt: 0,
+    context: { window: 200000, ...(e?.breakdown ? { breakdown: { totalTokens: 84000 } } : {}) },
+    rateLimits: [],
+  } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>HINT</Text>
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const hint = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'PromptHint', props: { hint: '' } })
+  expect(JSON.stringify(await hint.drawn())).toContain('≈84k/200k')
+})
+
+test('fresh session: shared limits stay through an empty measure', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : e.name === 'USERPROFILE' || e.name === 'HOME' ? '/home' : undefined }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('fs.read', (_$: any, e: any, next: any) =>
+    e.path.endsWith('ClauDiscobombulating-limits.json') ? { value: JSON.stringify({ at: 5, limits: [{ kind: 'seven_day', percentUsed: 63 }] }) } : next(e),
+  )
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(1100)
+  await $.session.measure({ context: { window: 1 }, rateLimits: [], changed: ['context'] })
+  await clock.advance(1100)
+  const band = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(JSON.stringify(await band.drawn())).toContain('"63"')
+})

@@ -3,7 +3,7 @@ export type Live = { model: string; effort: string }
 export type Pending = { model: string; effort: string }
 export type Timer = { at: number; text: string }
 export type Draft = { h: number; m: number; isSet: boolean }
-export type Context = { tokens: number; window: number; percent: number }
+export type Context = { tokens: number; window: number; percent: number; isGuess?: boolean }
 export type Counted = { n: number; prev: number }
 
 declare module 'claude-code' {

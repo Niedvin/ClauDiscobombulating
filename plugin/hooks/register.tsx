@@ -31,6 +31,7 @@ const NO_COMPACT_BEFORE_RESET_MS = 59 * 60000
 const COMPACT_GRACE_MS = 600000
 const COMPACT_QUIET_MSGS = 5
 const COUNT_FRAME_MS = 50
+const GUESS_EVERY_MS = 30000
 const DANCE_FRAME_MS = 40
 const STAGE_MIN_ROWS = 12
 const ALERT_TITLE = 'ClauDiscobombulating'
@@ -101,7 +102,7 @@ const UK = {
   placeholder: 'текст повідомлення',
   cancelBtn: '✕  скасувати',
   sendBtn: '✓  відправити',
-  effortHint: 'змінити',
+  chordHint: 'змінити',
   timer: 'Таймер',
   model: 'Модель',
   sep: ' ',
@@ -133,7 +134,7 @@ const EN: typeof UK = {
   placeholder: 'message text',
   cancelBtn: '✕  cancel',
   sendBtn: '✓  send',
-  effortHint: 'to change',
+  chordHint: 'to change',
   timer: 'Timer',
   model: 'Model',
   sep: ',',
@@ -271,7 +272,7 @@ const glow = (n: number) => Array.from({ length: n }, (_, k) => hsl((280 + (k * 
 const cacheText = (min: number) => (min <= 0 ? '⚠ Cache Miss' : `${tr.cache} ${min}${tr.min}`)
 const cacheColor = (min: number) => (min <= 5 ? '#ef5b5b' : min <= 15 ? '#f0b429' : '#3fbf8f')
 const kTok = (n: number) => (n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`)
-const ctxLabel = (c: Context) => (c.window > 0 ? `${kTok(c.tokens)}/${kTok(c.window)}` : '')
+const ctxLabel = (c: Context) => (c.window > 0 ? `${c.isGuess ? '≈' : ''}${kTok(c.tokens)}/${kTok(c.window)}` : '')
 const grouped = (n: number) => String(Math.max(0, Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, tr.sep)
 
 // pure yellow at 600k, pure red from 900k: the user's pick — 2026-10-11
@@ -473,6 +474,18 @@ async function resume($: EngineInterface, surface: string) {
   await $.prompt.submit({ text, asUser: true })
 }
 
+let guessedAt = 0
+let guessed = 0
+// no response yet after resume or compaction → usage() has no tokens; /context's local estimate fills in — 2026-10-14
+async function guessTokens($: EngineInterface) {
+  const now = Date.now()
+  if (now - guessedAt < GUESS_EVERY_MS) return guessed
+  guessedAt = now
+  const b = (await $.session.usage({ breakdown: 'summary' }).catch(() => undefined))?.context.breakdown
+  if (b) guessed = b.totalTokens
+  return guessed
+}
+
 let polling = false
 async function poll($: EngineInterface) {
   // a tick is skipped rather than overlapped: the reads below are not atomic together — 2026-10-11
@@ -494,9 +507,12 @@ async function poll($: EngineInterface) {
     const u = await $.session.usage().catch(() => undefined)
     const c = u?.context
     if (c) {
-      const fresh: Context = { tokens: c.tokens ?? 0, window: c.window ?? 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : c.tokens && c.window ? Math.round((c.tokens / c.window) * 100) : -1 }
+      const isGuess = typeof c.tokens !== 'number' && c.window > 0
+      const tokens = isGuess ? await guessTokens($) : (c.tokens ?? 0)
+      if (!isGuess) guessedAt = 0
+      const fresh: Context = { tokens, window: c.window ?? 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : tokens && c.window ? Math.round((tokens / c.window) * 100) : -1, isGuess }
       const seen = await read($, context)
-      if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent) await update($, context, () => fresh)
+      if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent || !seen.isGuess !== !fresh.isGuess) await update($, context, () => fresh)
       measured(fresh.tokens)
       kickCount($)
     }
@@ -901,18 +917,27 @@ function fadeTree(node: unknown, k: number, inherit: number, text: (s: string, c
   return out
 }
 
+// pane:* runs in the engine only with 2+ panes; chat:*Effort is listed but has no engine handler — 2026-10-14
+const MODEL_NEXT = 'pane:next'
+const MODEL_PREV = 'pane:previous'
+const EFFORT_UP = 'chat:increaseEffort'
+const EFFORT_DOWN = 'chat:decreaseEffort'
+
+let modelChord = ''
 let effortChord = ''
-// the chord is whatever the person bound to pane:next, so the hint names theirs or nothing — 2026-10-11
+// the chord is whatever the person bound to the action, so the hint names theirs or nothing — 2026-10-11
 async function loadChord($: EngineInterface) {
   const dir = (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${await homeDir($)}/.claude`
   const kb = JSON.parse(await $.fs.read(`${dir}/keybindings.json`)) as { bindings?: { bindings?: Record<string, unknown> }[] }
-  for (const block of kb.bindings ?? []) {
-    const hit = Object.entries(block.bindings ?? {}).find(([, action]) => action === 'pane:next')
-    if (hit) {
-      effortChord = hit[0]
-      return
+  const chordOf = (action: string) => {
+    for (const block of kb.bindings ?? []) {
+      const hit = Object.entries(block.bindings ?? {}).find(([, a]) => a === action)
+      if (hit) return hit[0]
     }
+    return ''
   }
+  modelChord = chordOf(MODEL_NEXT)
+  effortChord = chordOf(EFFORT_UP)
 }
 
 async function enableFull($: EngineInterface, why: string) {
@@ -952,7 +977,7 @@ export const register: Register = on => {
     pollEvery = $.clock.every(1000, () => void poll($))
     try {
       const u = await $.session.usage()
-      await update($, limits, () => u.rateLimits.map(l => ({ ...l })))
+      if (u.rateLimits.length > 0) await update($, limits, () => u.rateLimits.map(l => ({ ...l })))
       await poll($)
       const p = await read($, pending)
       // a reload inside the pick debounce leaves pending set: re-arm the apply — 2026-10-06
@@ -999,8 +1024,11 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     const ls = e.rateLimits.map(l => ({ ...l }))
-    await update($, limits, () => ls)
-    if (ls.length > 0) await shareLimits($, ls).catch(() => undefined)
+    // empty = no reply yet in this session: keep the shared reading rather than blank the band — 2026-10-14
+    if (ls.length > 0) {
+      await update($, limits, () => ls)
+      await shareLimits($, ls).catch(() => undefined)
+    }
     return next(e)
   })
 
@@ -1190,15 +1218,16 @@ export const register: Register = on => {
           <Box key="pick" flexDirection="row" alignItems="center" gap={1}>
             <Button key="to-pane" plain dimColor label={tr.toPane} onPress={() => openPane($, 'button')} />
             <Box flexDirection="row" alignItems="center" gap={1} borderStyle="round" borderColor={hue} paddingX={1}>
-              <Button key="m-prev" plain dimColor label="◀" onPress={() => pick($, 'model', -1)} />
+              <Button key="m-prev" plain dimColor label="◀" action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
               <Text bold color={hue}>
                 {modelLabel(model)}
                 {p.model ? ' •' : ''}
               </Text>
-              <Button key="m-next" plain dimColor label="▶" onPress={() => pick($, 'model', 1)} />
+              <Button key="m-next" plain dimColor label="▶" action={MODEL_NEXT} onPress={() => pick($, 'model', 1)} />
+              {modelChord ? <Text key="chord" dimColor>{modelChord}</Text> : null}
             </Box>
             <Box flexDirection="row" alignItems="center" gap={1} borderStyle="round" borderColor={effortColor} paddingX={1}>
-              <Button key="e-prev" plain dimColor label="◀" action="pane:previous" onPress={() => pick($, 'effort', -1)} />
+              <Button key="e-prev" plain dimColor label="◀" action={EFFORT_DOWN} onPress={() => pick($, 'effort', -1)} />
               <Text bold color={effortColor}>
                 {effort || 'auto'}
                 {p.effort ? ' •' : ''}
@@ -1208,7 +1237,7 @@ export const register: Register = on => {
                   <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k]}</Text>
                 ))}
               </Text>
-              <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
+              <Button key="e-next" plain dimColor label="▶" action={EFFORT_UP} onPress={() => pick($, 'effort', 1)} />
               {effortChord ? <Text key="chord" dimColor>{effortChord}</Text> : null}
             </Box>
           </Box>
@@ -1402,13 +1431,14 @@ export const register: Register = on => {
           'model',
           tr.model,
           <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={hue} paddingX={1} width={width}>
+            {/* the band hides its picker while the pane is up, so the chord actions live here too — 2026-10-11 */}
             <Box flexDirection="row" gap={2}>
-              <Button key="m-prev" plain dimColor label="◀" onPress={() => pick($, 'model', -1)} />
+              <Button key="m-prev" plain dimColor label="◀" action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
               <Text bold color={hue}>
                 {modelLabel(model)}
                 {p.model ? ' •' : ''}
               </Text>
-              <Button key="m-next" plain dimColor label="▶" onPress={() => pick($, 'model', 1)} />
+              <Button key="m-next" plain dimColor label="▶" action={MODEL_NEXT} onPress={() => pick($, 'model', 1)} />
             </Box>
             <Text>
               {MODELS.map((m, k) => (
@@ -1416,19 +1446,25 @@ export const register: Register = on => {
               ))}
             </Text>
           </Box>,
+          modelChord ? (
+            <Text>
+              <Text>{' '}</Text>
+              <Text bold color="#9a9aab">{modelChord}</Text>
+              <Text dimColor>{` ${tr.chordHint} `}</Text>
+            </Text>
+          ) : null,
         )}
         {framed(
           'effort',
           'Effort',
           <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={effortColor} paddingX={1} width={width}>
-            {/* the band hides its picker while the pane is up, so the ctrl+t actions live here too — 2026-10-11 */}
             <Box flexDirection="row" gap={2}>
-              <Button key="e-prev" plain dimColor label="◀" action="pane:previous" onPress={() => pick($, 'effort', -1)} />
+              <Button key="e-prev" plain dimColor label="◀" action={EFFORT_DOWN} onPress={() => pick($, 'effort', -1)} />
               <Text bold color={effortColor}>
                 {effort || 'auto'}
                 {p.effort ? ' •' : ''}
               </Text>
-              <Button key="e-next" plain dimColor label="▶" action="pane:next" onPress={() => pick($, 'effort', 1)} />
+              <Button key="e-next" plain dimColor label="▶" action={EFFORT_UP} onPress={() => pick($, 'effort', 1)} />
             </Box>
             <Text>
               {EFFORTS.map((lv, k) => (
@@ -1440,7 +1476,7 @@ export const register: Register = on => {
             <Text>
               <Text>{' '}</Text>
               <Text bold color="#9a9aab">{effortChord}</Text>
-              <Text dimColor>{` ${tr.effortHint} `}</Text>
+              <Text dimColor>{` ${tr.chordHint} `}</Text>
             </Text>
           ) : null,
         )}
