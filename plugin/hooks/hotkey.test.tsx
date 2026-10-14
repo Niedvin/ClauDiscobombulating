@@ -60,3 +60,33 @@ test('open pane carries the alt+m model and alt+e effort buttons', { timeoutMs: 
   await clock.advance(800)
   expect(ran).toContain('effort xhigh')
 })
+
+test('first start adds the default keys beside the own ones, with a backup', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const norm = (p: string) => p.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
+  const files: Record<string, string> = { '/home/.claude/keybindings.json': JSON.stringify({ bindings: [{ context: 'Chat', bindings: { 'ctrl+e': 'chat:externalEditor' } }] }) }
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: { effortLevel: 'high' } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'en' : e.name === 'USERPROFILE' || e.name === 'HOME' ? '/home' : undefined }))
+  on('tool.register', (_$: any, e: any) => ({ value: { tool: e.name } }))
+  on('command.register', (_$: any, e: any) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [{ id: 'ClauDiscobombulating', isPlaced: true, isShown: true }] }))
+  on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+  on('fs.exists', (_$: any, e: any, next: any) => (norm(e.path) in files ? { value: true } : next(e)))
+  on('fs.read', (_$: any, e: any, next: any) => (norm(e.path) in files ? { value: files[norm(e.path)] } : next(e)))
+  on('fs.write', (_$: any, e: any) => {
+    files[norm(e.path)] = e.text
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(1100)
+  const kb = JSON.parse(files['/home/.claude/keybindings.json']!)
+  const global = kb.bindings.find((b: any) => b.context === 'Global').bindings
+  expect(global['ctrl+q']).toBe('pane:next')
+  expect(global['alt+e']).toBe('chat:increaseEffort')
+  expect(global['ctrl+e']).toBeUndefined()
+  expect(kb.bindings[0].bindings['ctrl+e']).toBe('chat:externalEditor')
+  expect(Object.keys(files).some(p => p.includes('/.backups/keybindings.json.'))).toBe(true)
+})

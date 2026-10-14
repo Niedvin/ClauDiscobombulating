@@ -958,11 +958,58 @@ const MODEL_PREV = 'pane:previous'
 const EFFORT_UP = 'chat:increaseEffort'
 const EFFORT_DOWN = 'chat:decreaseEffort'
 
+// ctrl+letter reaches the engine as a control code on any layout; alt+letter matches only under a Latin one — 2026-10-14
+const DEFAULT_BINDS: Record<string, string> = {
+  'ctrl+q': MODEL_NEXT,
+  'ctrl+e': EFFORT_UP,
+  'alt+m': MODEL_NEXT,
+  'alt+shift+m': MODEL_PREV,
+  'alt+e': EFFORT_UP,
+  'alt+shift+e': EFFORT_DOWN,
+}
+
+const configDir = async ($: EngineInterface) => (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${await homeDir($)}/.claude`
+
+type Keybindings = { bindings?: { context?: string; bindings?: Record<string, unknown> }[] }
+
+// once per install: a person who later removes or rebinds these keeps their choice — 2026-10-14
+async function seedBindings($: EngineInterface) {
+  if ((await $.store.get('bindsSeeded').catch(() => undefined)) === true) return
+  const dir = await configDir($)
+  const path = `${dir}/keybindings.json`
+  const had = await $.fs.exists(path)
+  const old = had ? await $.fs.read(path) : ''
+  const kb = (had ? JSON.parse(old) : { $schema: 'https://www.schemastore.org/claude-code-keybindings.json', bindings: [] }) as Keybindings
+  if (!Array.isArray(kb.bindings)) return
+  const all = kb.bindings.flatMap(b => Object.entries(b.bindings ?? {}))
+  const actions = new Set(all.map(([, a]) => a))
+  const keys = new Set(all.map(([k]) => k.toLowerCase()))
+  const add = Object.entries(DEFAULT_BINDS).filter(([k]) => !keys.has(k))
+  // a person who already bound either action set their own keys — 2026-10-14
+  if (add.length > 0 && !actions.has(MODEL_NEXT) && !actions.has(EFFORT_UP)) {
+    if (had) {
+      const backup = `${dir}/.backups/keybindings.json.${Date.now()}`
+      await $.fs.write(backup, old)
+      if ((await $.fs.read(backup)) !== old) return
+    }
+    let global = kb.bindings.find(b => b.context === 'Global')
+    if (!global) {
+      global = { context: 'Global', bindings: {} }
+      kb.bindings.push(global)
+    }
+    global.bindings = { ...(global.bindings ?? {}), ...Object.fromEntries(add) }
+    await $.fs.write(path, `${JSON.stringify(kb, null, 2)}
+`)
+    await note($, `keybindings: added ${add.map(([k]) => k).join(', ')}`)
+  }
+  await $.store.set('bindsSeeded', true)
+}
+
 let modelChord = ''
 let effortChord = ''
 // the chord is whatever the person bound to the action, so the hint names theirs or nothing — 2026-10-11
 async function loadChord($: EngineInterface) {
-  const dir = (await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)) || `${await homeDir($)}/.claude`
+  const dir = await configDir($)
   const kb = JSON.parse(await $.fs.read(`${dir}/keybindings.json`)) as { bindings?: { bindings?: Record<string, unknown> }[] }
   const chordOf = (action: string) => {
     for (const block of kb.bindings ?? []) {
@@ -986,6 +1033,7 @@ async function resync($: EngineInterface) {
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
+  await seedBindings($).catch(err => note($, `keybindings seed failed ${String(err)}`))
   await loadChord($).catch(() => undefined)
   await update($, full, () => true)
   await loadVersion($).catch(() => undefined)
