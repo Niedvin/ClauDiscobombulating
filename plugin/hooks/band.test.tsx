@@ -77,8 +77,8 @@ test('desktop compact button: effort low, compact, effort back', { timeoutMs: 20
   expect(ran).toEqual(['effort low', 'compact', 'effort xhigh'])
 })
 
-test('resumed session before a response: context from the local estimate', { timeoutMs: 20000 }, async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+test('fresh session shows no context; after a compaction the local estimate', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
   on('session.usage', (_$: any, e: any) => ({ value: {
     startedAt: 0,
     context: { window: 200000, ...(e?.breakdown ? { breakdown: { totalTokens: 84000 } } : {}) },
@@ -86,12 +86,16 @@ test('resumed session before a response: context from the local estimate', { tim
   } }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.compact', () => ({ messages: [{ role: 'assistant', text: 'summary', toolUses: [] }] }))
   on('ui.render', { component: 'PromptHint' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>HINT</Text>
   })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const hint = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'desktop', component: 'PromptHint', props: { hint: '' } })
+  expect(JSON.stringify(await hint.drawn())).toContain('HINT')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  await clock.advance(1100)
   expect(JSON.stringify(await hint.drawn())).toContain('≈84k/200k')
 })
 

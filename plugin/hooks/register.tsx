@@ -38,16 +38,19 @@ const ALERT_TITLE = 'ClauDiscobombulating'
 // no double quotes: argv reaches powershell.exe as one command line — 2026-10-06
 const ALERT_PS = `$ErrorActionPreference='Stop';Add-Type -AssemblyName PresentationCore;$p=New-Object System.Windows.Media.MediaPlayer;$p.Open([uri]$env:PB_SOUND);$p.Play();[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime];$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml('<toast><visual><binding template=''ToastGeneric''><text>'+$env:PB_TITLE+'</text><text>'+$env:PB_BODY+'</text></binding></visual><audio silent=''true''/></toast>');[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x));Start-Sleep -Seconds 5`
 
-// the pane the mod opens itself waits undrawn below the dock threshold; the console window grows to fit it — 2026-10-12
-// WT refuses a resize made from outside the app, classic consoles take this one; the app-side check decides either way
+// WT takes CSI 8 t written to the console, but not after SetConsoleWindowInfo already resized its buffer; classic consoles take the latter — 2026-10-14
 const WIDEN_CS = `using System;
 using System.Runtime.InteropServices;
 public class W {
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleMode(IntPtr h, out uint mode);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleMode(IntPtr h, uint mode);
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr templ);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSI info);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleScreenBufferSize(IntPtr h, COORD size);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleWindowInfo(IntPtr h, bool absolute, ref RECT rect);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool WriteConsoleW(IntPtr h, string text, uint n, out uint written, IntPtr reserved);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public short Left; public short Top; public short Right; public short Bottom; }
@@ -57,21 +60,27 @@ public class W {
 // hex literals parse as negative ints in PowerShell and the uint parameters refuse them; single quotes only, the argv keeps them — 2026-10-12
 const WIDEN_PS =
   `$ErrorActionPreference='SilentlyContinue';Add-Type -TypeDefinition $env:CDB_CS;` +
-  `[W]::AttachConsole([uint32]::MaxValue)|Out-Null;` +
+  `[W]::FreeConsole()|Out-Null;[W]::AttachConsole([uint32]::MaxValue)|Out-Null;` +
   `$h=[W]::CreateFileW('CONOUT$',[uint32]3221225472,[uint32]3,[IntPtr]::Zero,[uint32]3,[uint32]0,[IntPtr]::Zero);` +
   `$hv=0;try{$hv=$h.ToInt64()}catch{};` +
   `if($hv -gt 0){$i=New-Object 'W+CSI';` +
   `if([W]::GetConsoleScreenBufferInfo($h,[ref]$i)){` +
-  `$rows=$i.Window.Bottom-$i.Window.Top+1;$cols=$i.Window.Right-$i.Window.Left+1;$t=[int]$env:CDB_WIDEN;` +
-  `if($t -gt 0 -and $cols -lt $t){` +
-  `$b=New-Object 'W+COORD';$b.X=[int16]$t;$b.Y=$i.Size.Y;` +
+  `$rows=$i.Window.Bottom-$i.Window.Top+1;$cols=$i.Window.Right-$i.Window.Left+1;$t=[int]$env:CDB_WIDEN;$u=[int]$env:CDB_ROWS;` +
+  `if($t -lt $cols){$t=$cols};if($u -lt $rows){$u=$rows};Write-Output ([string]$cols+'x'+$rows);` +
+  `if($t -gt $cols -or $u -gt $rows){` +
+  `$m=[uint32]0;[W]::GetConsoleMode($h,[ref]$m)|Out-Null;[W]::SetConsoleMode($h,[uint32]($m -bor 5))|Out-Null;` +
+  `$s=[string][char]27+'[8;'+$u+';'+$t+'t';$n=[uint32]0;[W]::WriteConsoleW($h,$s,[uint32]$s.Length,[ref]$n,[IntPtr]::Zero)|Out-Null;[W]::SetConsoleMode($h,$m)|Out-Null;` +
+  `Start-Sleep -Milliseconds 400;[W]::GetConsoleScreenBufferInfo($h,[ref]$i)|Out-Null;` +
+  `if($i.Window.Right-$i.Window.Left+1 -lt $t -or $i.Window.Bottom-$i.Window.Top+1 -lt $u){` +
+  `$b=New-Object 'W+COORD';$b.X=[int16]$t;$b.Y=[int16][Math]::Max([int]$i.Size.Y,$u);` +
   `[W]::SetConsoleScreenBufferSize($h,$b)|Out-Null;` +
-  `$r=New-Object 'W+RECT';$r.Left=0;$r.Top=0;$r.Right=[int16]($t-1);$r.Bottom=[int16]($rows-1);` +
-  `[W]::SetConsoleWindowInfo($h,$true,[ref]$r)|Out-Null}}};` +
+  `$r=New-Object 'W+RECT';$r.Left=0;$r.Top=0;$r.Right=[int16]($t-1);$r.Bottom=[int16]($u-1);` +
+  `[W]::SetConsoleWindowInfo($h,$true,[ref]$r)|Out-Null}}}};` +
   `[W]::CloseHandle($h)|Out-Null`
 
-// the dock places the pane from 110 cols once the person asked for it, from 144 when the mod opens it on its own — 2026-10-12
-const WIDEN_TARGETS = [110, 144]
+// the dock places a pane the mod opens on its own from 144 cols; 40 rows show the whole pane unscrolled — 2026-10-14
+const FIT_COLS = 144
+const FIT_ROWS = 40
 const WIDEN_WAIT_MS = 1200
 const GROW_GAP_MS = 10000
 const GROW_MAX = 3
@@ -222,31 +231,43 @@ async function openPane($: EngineInterface, why: string) {
 
 let growTries = 0
 let growAt = 0
+let growFor = ''
+let view = { columns: 0, rows: 0 }
 
-async function widenConsole($: EngineInterface, cols: number) {
-  const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIDEN_PS]
-  await $.process.run(argv, { env: { CDB_CS: WIDEN_CS, CDB_WIDEN: String(cols) }, timeoutMs: 10000 }).catch(err => note($, `widen failed ${String(err)}`))
+async function widenConsole($: EngineInterface) {
+  const rows = Math.max(view.rows, FIT_ROWS)
+  if ((await $.env.get('OS').catch(() => undefined)) === 'Windows_NT') {
+    const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIDEN_PS]
+    const r = await $.process.run(argv, { env: { CDB_CS: WIDEN_CS, CDB_WIDEN: String(FIT_COLS), CDB_ROWS: String(rows) }, timeoutMs: 10000 }).catch(err => note($, `widen failed ${String(err)}`))
+    if (r) await note($, `widen: console ${r.stdout.trim() || 'unseen'}`)
+    return
+  }
+  const grow = 's=$(stty size </dev/tty) || exit 0; r=${s% *}; c=${s#* }; [ "$r" -lt "$CDB_ROWS" ] && r=$CDB_ROWS; [ "$c" -lt "$CDB_WIDEN" ] && c=$CDB_WIDEN; printf "\\033[8;%s;%st" "$r" "$c" > /dev/tty'
+  const argv = ['sh', '-c', grow]
+  await $.process.run(argv, { env: { CDB_WIDEN: String(FIT_COLS), CDB_ROWS: String(rows) }, timeoutMs: 5000 }).catch(err => note($, `widen failed ${String(err)}`))
 }
 
-// grows the console to the smallest width that shows the pane, then checks the engine placed it — 2026-10-12
+// the viewport leaves out a docked pane, so only its rows tell the window is short; width is the unplaced pane's trigger — 2026-10-14
+const isShort = () => view.rows > 0 && view.rows < FIT_ROWS
+
+// grows the window to show the whole mod, then checks the engine placed the pane; tries re-arm when the size changes — 2026-10-14
 async function fitPane($: EngineInterface): Promise<boolean> {
-  if (!isFull || growTries >= GROW_MAX) return false
-  if ((await $.env.get('OS').catch(() => undefined)) !== 'Windows_NT') return false
+  if (!isFull) return false
+  const size = `${view.columns}x${view.rows}`
+  if (size !== growFor) {
+    growFor = size
+    growTries = 0
+  }
+  if (growTries >= GROW_MAX) return false
   const now = await $.clock.now()
   if (now - growAt < GROW_GAP_MS) return false
   growAt = now
   growTries++
-  for (const cols of WIDEN_TARGETS) {
-    await widenConsole($, cols)
-    await new Promise<void>(r => $.clock.after(WIDEN_WAIT_MS, () => r()))
-    const placed = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced)
-    if (placed) {
-      await note($, `pane placed after widening to ${cols}`)
-      return true
-    }
-  }
-  await note($, 'pane waits: the terminal refused the widen')
-  return false
+  await widenConsole($)
+  await new Promise<void>(r => $.clock.after(WIDEN_WAIT_MS, () => r()))
+  const placed = (await $.ui.panes().catch(() => [])).some(x => x.id === PANE && x.isPlaced)
+  await note($, placed ? `pane placed after widening from ${size}` : `widen from ${size}: pane waits`)
+  return placed
 }
 
 async function savedEffort($: EngineInterface, model: string) {
@@ -447,7 +468,10 @@ async function autoCompact($: EngineInterface) {
     }
     await note($, `auto compact at ${five.percentUsed}%`)
     // the window is marked only once a compact stood, so a failed one can retry — 2026-10-06
-    if (await compact($)) await update($, compactedFor, () => key)
+    if (await compact($)) {
+      compactedKey = key
+      await update($, compactedFor, () => key)
+    }
   } finally {
     isCompacting = false
   }
@@ -475,8 +499,11 @@ async function resume($: EngineInterface, surface: string) {
 }
 
 let guessedAt = 0
+let isCompacted = false
+let compactedKey = ''
+let latestSeen = ''
 let guessed = 0
-// no response yet after resume or compaction → usage() has no tokens; /context's local estimate fills in — 2026-10-14
+// no response yet after a compaction → usage() has no tokens; /context's local estimate fills in — 2026-10-14
 async function guessTokens($: EngineInterface) {
   const now = Date.now()
   if (now - guessedAt < GUESS_EVERY_MS) return guessed
@@ -504,13 +531,17 @@ async function poll($: EngineInterface) {
       void alertCache($)
     }
     await adoptShared($).catch(() => undefined)
+    await resync($).catch(() => undefined)
     const u = await $.session.usage().catch(() => undefined)
     const c = u?.context
     if (c) {
-      const isGuess = typeof c.tokens !== 'number' && c.window > 0
+      const has = typeof c.tokens === 'number'
+      if (has) isCompacted = false
+      const isGuess = !has && isCompacted && c.window > 0
       const tokens = isGuess ? await guessTokens($) : (c.tokens ?? 0)
       if (!isGuess) guessedAt = 0
-      const fresh: Context = { tokens, window: c.window ?? 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : tokens && c.window ? Math.round((tokens / c.window) * 100) : -1, isGuess }
+      // no reply yet in a fresh session: nothing to show — 2026-10-14
+      const fresh: Context = { tokens, window: has || isGuess ? c.window : 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : tokens && c.window ? Math.round((tokens / c.window) * 100) : -1, isGuess }
       const seen = await read($, context)
       if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent || !seen.isGuess !== !fresh.isGuess) await update($, context, () => fresh)
       measured(fresh.tokens)
@@ -529,8 +560,8 @@ async function poll($: EngineInterface) {
     const panes = await $.ui.panes().catch(() => [])
     const up = panes.some(x => x.id === PANE && x.isPlaced && x.isShown)
     if (up !== (await read($, paneUp))) await update($, paneUp, () => up)
-    // an open pane the terminal cannot place: ask for the width again, throttled and capped — 2026-10-12
-    if (!up && panes.some(x => x.id === PANE)) void fitPane($).catch(err => note($, `fit failed ${String(err)}`))
+    // an unplaced pane or a window too short for it: ask for the size again, throttled and capped — 2026-10-14
+    if ((!up && panes.some(x => x.id === PANE)) || isShort()) void fitPane($).catch(err => note($, `fit failed ${String(err)}`))
     const model = await $.session.model()
     const raw = ((await $.settings.read({ source: 'flag' })) as { effortLevel?: unknown }).effortLevel
     const flagEffort = typeof raw === 'string' ? raw : ''
@@ -601,7 +632,7 @@ async function adoptShared($: EngineInterface) {
   } catch {
     return
   }
-  if (!v || !Array.isArray(v.limits) || v.at <= sharedAt) return
+  if (!v || !Array.isArray(v.limits) || (v.at <= sharedAt && (await read($, limits)).length > 0)) return
   sharedAt = v.at
   await update($, limits, () => v.limits)
 }
@@ -736,7 +767,10 @@ async function checkVersion($: EngineInterface) {
   const r = await $.http.fetch(`https://raw.githubusercontent.com/${repo}/main/plugin/.claude-plugin/plugin.json`)
   if (!r.ok) return
   const m = JSON.parse(r.text) as { version?: unknown }
-  if (typeof m.version === 'string' && newerThan(m.version, pluginVersion)) await update($, latest, () => m.version)
+  if (typeof m.version === 'string' && newerThan(m.version, pluginVersion)) {
+    latestSeen = m.version
+    await update($, latest, () => m.version)
+  }
 }
 
 // the click on the header's new-version line: pull the release in, restart applies — 2026-10-11
@@ -747,6 +781,7 @@ async function doUpdate($: EngineInterface) {
     const os = await $.env.get('OS').catch(() => undefined)
     const argv = os === 'Windows_NT' ? ['cmd.exe', '/c', `claude ${args.join(' ')}`] : ['claude', ...args]
     await $.process.run(argv, { timeoutMs: 180000 })
+    latestSeen = ''
     await update($, latest, () => '')
     $.ui.toast(tr.updateDone(v))
   } catch (err) {
@@ -940,6 +975,14 @@ async function loadChord($: EngineInterface) {
   effortChord = chordOf(EFFORT_UP)
 }
 
+// /resume and /clear go on under a new session id with fresh atoms: the mod's own truth is written back each tick — 2026-10-14
+async function resync($: EngineInterface) {
+  if (isFull && !(await read($, full))) await update($, full, () => true)
+  if (countOn !== (await read($, countMode))) await update($, countMode, () => countOn)
+  if (latestSeen !== (await read($, latest))) await update($, latest, () => latestSeen)
+  if (compactedKey && compactedKey !== (await read($, compactedFor))) await update($, compactedFor, () => compactedKey)
+}
+
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
@@ -1012,6 +1055,7 @@ export const register: Register = on => {
   })
 
   on('classic.SessionStart', async ($, e, next) => {
+    if (e.source !== 'compact') isCompacted = false
     const secs = e.seconds_since_last_response
     if (typeof secs === 'number') {
       try {
@@ -1040,6 +1084,7 @@ export const register: Register = on => {
         const doneAt = await $.clock.now()
         await update($, compactedAt, () => doneAt)
         await update($, sinceCompact, () => 0)
+        isCompacted = true
         // compaction is its own API request, so the 1h cache timer restarts here — 2026-10-10
         lastActive = doneAt
         await update($, activeAt, () => doneAt)
@@ -1122,6 +1167,11 @@ export const register: Register = on => {
         metrics,
         paneRows,
         log: await read($, log),
+        limits: await read($, limits),
+        context: await read($, context),
+        cacheLeft: await read($, cacheLeft),
+        usage: await $.session.usage().catch(err => String(err)),
+        full: isFull,
       }
       return { result: JSON.stringify(data, null, 1) }
     } catch (err) {
@@ -1174,6 +1224,7 @@ export const register: Register = on => {
     }
     if (!(await read($, full))) return next(e)
     metrics = { surface: e.surface, bodyColumns: e.props.bodyColumns, maxRows: e.props.maxRows, viewport: e.viewport ?? null }
+    if (e.viewport) view = { columns: e.viewport.columns, rows: e.viewport.rows }
     const cur = await read($, live)
     const p = await read($, pending)
     const model = p.model || cur.model
