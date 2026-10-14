@@ -23,6 +23,8 @@ const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
 const CACHE_TTL_MS = 3600000
+// a miss under 200k tokens is cheap to re-cache: no ask, no Haiku switch — user pick 2026-10-14
+const CHEAP_MISS_TOKENS = 200000
 const CACHE_SHOW_BELOW = 55
 const ALERT_MIN = 10
 const AUTO_COMPACT_AT = 99
@@ -290,7 +292,7 @@ function hsl(h: number, s: number, l: number) {
 // purple → pink → orange across n letters — 2026-10-11
 const glow = (n: number) => Array.from({ length: n }, (_, k) => hsl((280 + (k * 120) / Math.max(1, n - 1)) % 360, 0.75, 0.65))
 
-const cacheText = (min: number) => (min <= 0 ? '⚠ Cache Miss' : `${tr.cache} ${min}${tr.min}`)
+const cacheText = (min: number, tokens = 0) => (min <= 0 ? `⚠ Cache Miss${tokens > 0 ? ` ${kTok(tokens)}` : ''}` : `${tr.cache} ${min}${tr.min}`)
 const cacheColor = (min: number) => (min <= 5 ? '#ef5b5b' : min <= 15 ? '#f0b429' : '#3fbf8f')
 const kTok = (n: number) => (n >= 1000000 ? `${Math.round(n / 100000) / 10}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`)
 const ctxLabel = (c: Context) => (c.window > 0 ? `${c.isGuess ? '≈' : ''}${kTok(c.tokens)}/${kTok(c.window)}` : '')
@@ -306,6 +308,10 @@ function ctxColor(n: number, white = 0) {
 function cacheMinutes(now: number) {
   if (!lastActive || isBusy) return -1
   return Math.max(0, Math.ceil((CACHE_TTL_MS - (now - lastActive)) / 60000))
+}
+
+async function isCostlyMiss($: EngineInterface) {
+  return cacheMinutes(await $.clock.now()) === 0 && (await read($, context)).tokens >= CHEAP_MISS_TOKENS
 }
 
 const UK_TAG = /^uk(?![a-z])/i
@@ -407,7 +413,7 @@ async function compact($: EngineInterface): Promise<boolean> {
   const flagged = ((await $.settings.read({ source: 'flag' })) as SavedSettings).effortLevel
   const effort = (await read($, live)).effort || (isLevel(flagged) ? flagged : await savedEffort($, model))
   const fam = MODELS[modelIndex(model)]
-  const isMiss = cacheMinutes(await $.clock.now()) === 0
+  const isMiss = (await isCostlyMiss($))
   // haiku takes the whole 1M window now and is the cheap one to re-read the context on — 2026-10-10
   const isSwitch = isMiss && fam?.family !== 'haiku'
   // medium on a miss: the summary decides what the context keeps, so it is worth the thinking — 2026-10-10
@@ -488,7 +494,7 @@ async function sessions($: EngineInterface) {
 
 async function resume($: EngineInterface, surface: string) {
   const text = surface === 'terminal' ? RESUME_TERMINAL : RESUME_OTHER
-  if (cacheMinutes(await $.clock.now()) === 0 && !(await alertQuiet($))) {
+  if ((await isCostlyMiss($)) && !(await alertQuiet($))) {
     const answer = await $.ui
       .ask(tr.resumeAsk, [tr.yes, tr.no])
       .catch(() => '')
@@ -1232,6 +1238,7 @@ export const register: Register = on => {
     if (e.surface === 'desktop') {
       const ls = await read($, limits)
       const cache = await read($, cacheLeft)
+      const ctxTokens = (await read($, context)).tokens
       if (ls.length === 0 && cache < 0) return next(e)
       // desktop footer slot is ≈220 px and clips, so everything sits in this band; Svg drew nothing in the footer — 2026-10-06
       const { Box, Button, Text } = $.ui.resolve(e)
@@ -1263,7 +1270,7 @@ export const register: Register = on => {
           {showsCache(cache, e.surface)
             ? pill('cache', [
                 <Text key="t" bold={cache <= 0} color={cacheColor(cache)}>
-                  {cacheText(cache)}
+                  {cacheText(cache, ctxTokens)}
                 </Text>,
               ])
             : null}
@@ -1589,6 +1596,7 @@ export const register: Register = on => {
     if (e.surface === 'desktop') return next(e)
     const ls = await read($, limits)
     const cache = await read($, cacheLeft)
+    const ctxTokens = (await read($, context)).tokens
     if (ls.length === 0 && cache < 0) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const now = Date.now()
@@ -1598,7 +1606,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="row" gap={2}>
         {e.props.modes.length > 0 ? <Text dimColor>{e.props.modes.join(' & ')}</Text> : null}
-        {showsCache(cache, e.surface) ? <Text bold={cache <= 0} color={cacheColor(cache)}>{cacheText(cache)}</Text> : null}
+        {showsCache(cache, e.surface) ? <Text bold={cache <= 0} color={cacheColor(cache)}>{cacheText(cache, ctxTokens)}</Text> : null}
         {ls.slice(0, 3).map(l => {
           const n = Math.round(Math.min(l.percentUsed, 100) / 10)
           return (

@@ -2,13 +2,13 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = { title: 't', isFocused: false, bodyColumns: 24, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
 
-async function boot($: any, on: any, answer: string, limits: any[] = []) {
+async function boot($: any, on: any, answer: string, limits: any[] = [], tokens = 300000) {
   const sent: string[] = []
   const asked: string[] = []
   const ran: string[] = []
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', () => ({ value: {} }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: limits } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens, window: 1000000 }, rateLimits: limits } }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
   on('tool.register', (_$: any, e: any) => ({ value: { tool: e.name } }))
   on('command.register', (_$: any, e: any) => ({ value: { command: e.name } }))
@@ -86,6 +86,16 @@ test('resume: cache miss right after a compact sends without asking', { timeoutM
 test('resume: cache miss at a 99% limit sends without asking', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const { sent, asked, pane } = await boot($, on, 'Продовжити', [{ kind: 'five_hour', percentUsed: 99 }])
+  await finishTurn($)
+  await clock.advance(61 * 60000)
+  await pane.press({ key: 'resume' })
+  expect(asked).toEqual([])
+  expect(sent).toEqual(['--resume'])
+})
+
+test('resume: cache miss under 200k tokens sends without asking', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const { sent, asked, pane } = await boot($, on, 'Продовжити', [], 150000)
   await finishTurn($)
   await clock.advance(61 * 60000)
   await pane.press({ key: 'resume' })

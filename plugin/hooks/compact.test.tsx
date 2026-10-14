@@ -2,12 +2,12 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = { title: 't', isFocused: false, bodyColumns: 24, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
 
-async function run($: any, on: any, clock: any, idleMin: number, model: string, effort: string) {
+async function run($: any, on: any, clock: any, idleMin: number, model: string, effort: string, tokens = 300000) {
   const ran: string[] = []
   let current = model
   on('session.model', () => ({ value: current }))
   on('settings.read', () => ({ value: { effortLevel: effort } }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens, window: 1000000 }, rateLimits: [] } }))
   on('tool.register', (_$: any, e: any) => ({ value: { tool: e.name } }))
   on('command.register', (_$: any, e: any) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -50,3 +50,7 @@ test('compact on cache hit while on haiku: effort low, effort back', { timeoutMs
   expect(await run($, on, clock, 10, 'claude-haiku-5-5', 'high')).toEqual(['effort low', 'compact', 'effort high'])
 })
 
+test('compact on a cache miss under 200k tokens is a plain cheap compact', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  expect(await run($, on, clock, 61, 'claude-opus-5-5', 'xhigh', 150000)).toEqual(['effort low', 'compact', 'effort xhigh'])
+})
