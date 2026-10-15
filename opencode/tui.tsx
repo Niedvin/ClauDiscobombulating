@@ -56,6 +56,10 @@ const UK = {
   timer: "Таймер",
   model: "Модель",
   effortHint: "змінити",
+  subagents: "Субагенти",
+  subStart: "стартує…",
+  subThink: "думає…",
+  subWrite: "пише…",
 }
 const EN: typeof UK = {
   defaultText: "continue",
@@ -75,6 +79,10 @@ const EN: typeof UK = {
   timer: "Timer",
   model: "Model",
   effortHint: "to change",
+  subagents: "Subagents",
+  subStart: "starting…",
+  subThink: "thinking…",
+  subWrite: "writing…",
 }
 
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
@@ -93,6 +101,21 @@ const wrap = (i: number, n: number) => ((i % n) + n) % n
 const tone = (p: number) => (p >= 90 ? RED : p >= 70 ? YELLOW : GREEN)
 const UK_TAG = /^uk(?![a-z])/i
 const firstTag = (out: string) => /[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]+)?/.exec(out)?.[0] ?? ""
+
+// live-step hint for the subagent box: the argument that says most about the call — 2026-10-15
+const HINT_KEYS = ["filePath", "path", "command", "pattern", "query", "url", "description", "prompt"]
+const HINT_MAX = 26
+function toolHint(input: unknown) {
+  if (!input || typeof input !== "object") return ""
+  const rec = input as Record<string, unknown>
+  for (const k of HINT_KEYS) {
+    const v = rec[k]
+    if (typeof v !== "string" || !v.trim()) continue
+    const s = k === "filePath" || k === "path" ? path.basename(v.trim()) : v.trim().split("\n")[0]
+    return s.length > HINT_MAX ? `${s.slice(0, HINT_MAX - 1)}…` : s
+  }
+  return ""
+}
 
 function run(argv: string[], timeoutMs: number) {
   return new Promise<string>(resolve => {
@@ -266,11 +289,14 @@ function setup(context: Ctx) {
     ui.model.variant.set(options[wrap(i + dir, options.length)])
   }
 
+  function modelLabel(id: string, providerID: string) {
+    const m = data.location.model.list()?.find(x => x.providerID === providerID && (x.id === id || x.modelID === id))
+    return m?.name ?? id
+  }
+
   function modelName() {
     const cur = ui.model.current()
-    if (!cur) return "…"
-    const m = data.location.model.list()?.find(x => x.providerID === cur.providerID && (x.id === cur.modelID || x.modelID === cur.modelID))
-    return m?.name ?? cur.modelID
+    return cur ? modelLabel(cur.modelID, cur.providerID) : "…"
   }
 
   async function selfUpdate() {
@@ -496,7 +522,82 @@ function setup(context: Ctx) {
             </box>
           </Show>
         </box>
+
+        <Show when={p.sessionID}>{sid => <Subagents sessionID={sid()} />}</Show>
       </box>
+    )
+  }
+
+  // box under Effort: live subagents of this session tree — model, effort, current step — 2026-10-15
+  function Subagents(p: { sessionID: string }) {
+    const tried = new Map<string, number>()
+    const running = createMemo(() =>
+      data.session
+        .list()
+        .filter(s => s.parentID && s.id !== p.sessionID && data.session.root(s.id) === data.session.root(p.sessionID) && data.session.status(s.id) === "running")
+        .toSorted((a, b) => a.time.created - b.time.created),
+    )
+    // a reload misses earlier deltas: pull the transcript once per id while it runs — 2026-10-15
+    createEffect(() => {
+      const t = now()
+      const ids = new Set(running().map(s => s.id))
+      for (const id of [...tried.keys()]) if (!ids.has(id)) tried.delete(id)
+      for (const id of ids) {
+        if (data.session.message.list(id).length > 0 || t - (tried.get(id) ?? 0) < 4000) continue
+        tried.set(id, t)
+        void data.session.message.sync(id).catch(() => undefined)
+      }
+    })
+    const modelOf = (id: string) => {
+      const last = data.session.message.list(id).findLast(m => m.type === "assistant")
+      const ref = (last?.type === "assistant" ? last.model : undefined) ?? data.session.get(id)?.model
+      if (!ref) return { name: "…", effort: undefined as string | undefined }
+      const name = modelLabel(ref.id, ref.providerID)
+      return { name: name.length > 24 ? `${name.slice(0, 23)}…` : name, effort: ref.variant }
+    }
+    const activityOf = (id: string) => {
+      const last = data.session.message.list(id).findLast(m => m.type === "assistant")
+      const part = last?.type === "assistant" ? last.content[last.content.length - 1] : undefined
+      if (!part) return { glyph: "✧", text: tr().subStart }
+      if (part.type === "tool") {
+        if (part.state.status === "streaming") return { glyph: "⚙", text: `${part.name} …` }
+        if (part.state.status === "running") {
+          const hint = toolHint(part.state.input)
+          return { glyph: "⚙", text: hint ? `${part.name} ${hint}` : part.name }
+        }
+        return { glyph: "⚙", text: `${part.name} ${part.state.status === "error" ? "✕" : "✓"}` }
+      }
+      if (part.type === "text") {
+        const line = part.text.split("\n").find(l => l.trim())?.trim()
+        return { glyph: "✎", text: !line ? tr().subWrite : line.length > 28 ? `${line.slice(0, 27)}…` : line }
+      }
+      return { glyph: "✧", text: tr().subThink }
+    }
+    return (
+      <Show when={running().length > 0}>
+        <box border borderStyle="rounded" borderColor={PURPLE} title={` ${tr().subagents} `} titleColor={theme.text.muted} paddingX={1}>
+          <For each={running()}>
+            {(s, i) => {
+              const m = createMemo(() => modelOf(s.id))
+              const a = createMemo(() => activityOf(s.id))
+              return (
+                <box>
+                  <Show when={i() > 0}>
+                    <box height={1} />
+                  </Show>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.text.base}>
+                      <b>{m().name}</b>
+                    </text>
+                    <text fg={effortHue(m().effort) ?? theme.text.muted}>{m().effort ?? "default"}</text>
+                  </box>
+                  <text fg={theme.text.muted}>{`${a().glyph} ${a().text}`}</text>
+                </box>
+              )
+            }}
+          </For>
+        </box>
+      </Show>
     )
   }
 

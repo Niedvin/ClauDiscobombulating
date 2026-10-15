@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Hook, Register, RenderElement, Timer, TurnStepChunk } from 'claude-code'
 
-import type { Context, Counted, Draft, Limit, Live, Pending, Timer as Alarm } from '../types'
+import type { AgentLive, Context, Counted, Draft, Limit, Live, Pending, Timer as Alarm } from '../types'
 import { DANCE_MS, REVEAL_MS, danceCells } from './dance'
 import type { Head } from './dance'
 
@@ -116,6 +116,10 @@ const UK = {
   chordHint: 'змінити',
   timer: 'Таймер',
   model: 'Модель',
+  subagents: 'Субагенти',
+  subStart: 'стартує…',
+  subThink: 'думає…',
+  subWrite: 'пише…',
   sep: ' ',
   boom: 'БАХ!',
 }
@@ -148,6 +152,10 @@ const EN: typeof UK = {
   chordHint: 'to change',
   timer: 'Timer',
   model: 'Model',
+  subagents: 'Subagents',
+  subStart: 'starting…',
+  subThink: 'thinking…',
+  subWrite: 'writing…',
   sep: ',',
   boom: 'BOOM!',
 }
@@ -156,6 +164,7 @@ let tr = EN
 const limits = atom({ plugin: 'ClauDiscobombulating', key: 'limits' } as const, [] as Limit[])
 const live = atom({ plugin: 'ClauDiscobombulating', key: 'live' } as const, { model: '', effort: '' } as Live)
 const pending = atom({ plugin: 'ClauDiscobombulating', key: 'pending' } as const, { model: '', effort: '' } as Pending)
+const agents = atom({ plugin: 'ClauDiscobombulating', key: 'agents' } as const, {} as Record<string, AgentLive>)
 const flag = atom({ plugin: 'ClauDiscobombulating', key: 'flag' } as const, UNREAD)
 const paneUp = atom({ plugin: 'ClauDiscobombulating', key: 'paneUp' } as const, false)
 const timer = atom({ plugin: 'ClauDiscobombulating', key: 'timer' } as const, { at: 0, text: UK.defaultText } as Alarm)
@@ -191,6 +200,21 @@ function modelLabel(id: string) {
   return versionLabel(id) ?? (fam ? labels[fam] ?? cap(fam) : id || '…')
 }
 const isLevel = (v: unknown): v is string => typeof v === 'string' && EFFORTS.includes(v)
+const effortTone = (l: string) => EFFORT_COLORS[EFFORTS.indexOf(l)] ?? 'gray'
+// live-step hint for the subagents box: the argument that says most about the call — 2026-10-15
+const HINT_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'query', 'url', 'skill', 'description', 'prompt']
+const HINT_FILE = new Set(['file_path', 'notebook_path', 'path'])
+const HINT_MAX = 26
+function toolHint(e: Record<string, unknown>) {
+  for (const k of HINT_KEYS) {
+    const v = e[k]
+    if (typeof v !== 'string' || !v.trim()) continue
+    const first = v.trim().split('\n')[0] ?? v.trim()
+    const s = HINT_FILE.has(k) ? first.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? first : first
+    return s.length > HINT_MAX ? `${s.slice(0, HINT_MAX - 1)}…` : s
+  }
+  return ''
+}
 const REFUSED = /Not applied|Failed|Unknown|Usage:/
 const within = (row: number, [a, b]: number[]) => row >= a && row <= b
 const wrap = (i: number, n: number) => ((i % n) + n) % n
@@ -221,6 +245,27 @@ async function note($: EngineInterface, line: string) {
 async function countSinceCompact($: EngineInterface) {
   const seen = await read($, sinceCompact)
   if (seen < COMPACT_QUIET_MSGS) await update($, sinceCompact, () => seen + 1)
+}
+
+// a loop id the list does not name is an engine fork (compaction, memory), not a subagent — 2026-10-15
+async function adoptAgent($: EngineInterface, id: string) {
+  if ((await read($, agents))[id]) return true
+  const known = await $.agent.list().then(list => list.some(a => a.id === id)).catch(() => false)
+  if (known) await update($, agents, a => ({ ...a, [id]: { model: '', effort: '', line: `✧ ${tr.subThink}` } }))
+  return known
+}
+
+async function patchAgent($: EngineInterface, id: string, patch: Partial<AgentLive>) {
+  await update($, agents, a => (a[id] ? { ...a, [id]: { ...a[id], ...patch } } : a))
+}
+
+async function dropAgent($: EngineInterface, id: string) {
+  await update($, agents, a => {
+    if (!a[id]) return a
+    const left = { ...a }
+    delete left[id]
+    return left
+  })
 }
 
 type SavedSettings = { effortLevel?: unknown; modelSettings?: Record<string, { effortLevel?: unknown }> }
@@ -1070,6 +1115,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await applyLang($).catch(err => note($, `lang failed ${String(err)}`))
+    // subagents die with the process: anything the store kept is a ghost — 2026-10-15
+    await update($, agents, () => ({})).catch(() => undefined)
     pollEvery?.cancel()
     pollEvery = $.clock.every(1000, () => void poll($))
     try {
@@ -1157,8 +1204,22 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('agent.spawn', async ($, e, next) => {
+    const r = await next(e)
+    if (r?.agentId) {
+      try {
+        await update($, agents, a => ({ ...a, [r.agentId!]: { model: r.model, effort: '', line: `✧ ${tr.subStart}` } }))
+      } catch {}
+    }
+    return r
+  })
+
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId) return next(e)
+    if (e.agentId) {
+      // each run of an agent's loop is one turn; its end drops it from the box — 2026-10-15
+      await dropAgent($, e.agentId)
+      return next(e)
+    }
     isBusy = false
     // the held count settles to the real one only now that the turn is over — 2026-10-12
     kickCount($)
@@ -1175,7 +1236,27 @@ export const register: Register = on => {
       const effort = e.effort
       if (!p.effort && cur.effort !== effort) await update($, live, l => ({ ...l, effort }))
     }
-    if (!isFull || !countOn || e.agentId) return yield* next(e)
+    if (e.agentId) {
+      const id = e.agentId
+      if (!(await adoptAgent($, id))) return yield* next(e)
+      const effort = isLevel(e.effort) ? e.effort : typeof e.effort === 'number' ? String(e.effort) : ''
+      await patchAgent($, id, { model: e.model, effort, line: `✧ ${tr.subThink}` })
+      const stream = next(e)
+      let shown = ''
+      for await (const c of stream) {
+        try {
+          // the box follows text and tool starts; thinking keeps the step's own line — 2026-10-15
+          const want = c.kind === 'text' ? `✎ ${tr.subWrite}` : c.kind === 'tool' ? `⚙ ${c.name} …` : ''
+          if (want && want !== shown) {
+            shown = want
+            await patchAgent($, id, { line: want })
+          }
+        } catch {}
+        yield c
+      }
+      return await stream.result
+    }
+    if (!isFull || !countOn) return yield* next(e)
     const stream = next(e)
     const sent = ctxPending
     for await (const c of stream) {
@@ -1220,6 +1301,7 @@ export const register: Register = on => {
         commands,
         metrics,
         paneRows,
+        agents: await read($, agents),
         log: await read($, log),
         limits: await read($, limits),
         context: await read($, context),
@@ -1231,6 +1313,20 @@ export const register: Register = on => {
     } catch (err) {
       return { result: `probe failed: ${String(err)}` }
     }
+  })
+
+  // a tracked agent's tool keeps its line on the box while the tool runs — 2026-10-15
+  on('tool.call', async ($, e, next) => {
+    const id = e.agentId
+    if (!id || !(await read($, agents))[id]) return next(e)
+    const hint = toolHint(e as unknown as Record<string, unknown>)
+    const line = `⚙ ${e.tool}${hint ? ` ${hint}` : ''}`
+    await patchAgent($, id, { line }).catch(() => undefined)
+    const r = await next(e)
+    try {
+      if ((await read($, agents))[id]?.line === line) await patchAgent($, id, { line: `✧ ${tr.subThink}` })
+    } catch {}
+    return r
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -1431,6 +1527,8 @@ export const register: Register = on => {
     }
     const cur = await read($, live)
     const p = await read($, pending)
+    const agentV = await read($, agents)
+    const agentList = Object.entries(agentV)
     const model = p.model || cur.model
     const effort = p.effort || cur.effort
     const i = modelIndex(model)
@@ -1476,8 +1574,10 @@ export const register: Register = on => {
         </Button>
       </Box>
     )
+    // 2 rows an agent, a gap between, the border — 2026-10-15
+    const subRows = agentList.length ? agentList.length * 3 + 1 : 0
     const tree = (
-      <Box flexDirection="column" width={width} height={Math.max(e.props.scroll.bodyRows, modelAt + 6)} backgroundColor="black">
+      <Box flexDirection="column" width={width} height={Math.max(e.props.scroll.bodyRows, modelAt + 6 + (agentList.length ? gap + subRows : 0))} backgroundColor="black">
         {banner}
         {gap ? <Box height={1} /> : null}
         {framed(
@@ -1586,6 +1686,27 @@ export const register: Register = on => {
             </Text>
           ) : null,
         )}
+        {agentList.length && gap ? <Box height={1} /> : null}
+        {agentList.length
+          ? framed(
+              'subagents',
+              tr.subagents,
+              <Box flexDirection="column" borderStyle="round" borderColor="#b678e0" paddingX={1} width={width}>
+                {agentList.map(([id, a], k) => (
+                  <Box key={id} flexDirection="column">
+                    {k > 0 ? <Box height={1} /> : null}
+                    <Box flexDirection="row" justifyContent="space-between">
+                      <Text bold color={MODELS[modelIndex(a.model)]?.hue ?? 'gray'}>
+                        {modelLabel(a.model)}
+                      </Text>
+                      <Text color={effortTone(a.effort)}>{a.effort || 'auto'}</Text>
+                    </Box>
+                    <Text color="#9a9aab" wrap="truncate-end">{a.line}</Text>
+                  </Box>
+                ))}
+              </Box>,
+            )
+          : null}
       </Box>
     )
     if (danceAt <= 0 || fadeK >= 1) return tree
