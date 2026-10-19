@@ -12,11 +12,11 @@ async function setup($: any, on: any, busy: boolean, startPct = 96) {
   on('turn.complete', () => ({ text: '' }))
   on('turn.abort', (_$: any, e: any) => {
     ran.push(`abort ${e.turnId}`)
-    // engine skips a hook that returns neither { value } nor { deny } — 2026-10-10
     return { value: undefined }
   })
   on('ui.toast', () => ({ value: undefined }))
   on('env.get', () => ({ value: undefined }))
+  on('env.set', () => ({ value: undefined }))
   on('command.run', (_$: any, e: any) => {
     ran.push(`${e.command} ${e.args}`.trim())
     return { text: e.command === 'effort' ? `Set effort level to ${e.args} (this session only): x` : 'ok' }

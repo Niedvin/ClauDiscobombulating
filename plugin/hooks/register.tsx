@@ -16,14 +16,13 @@ const EFFORT_COLORS = ['#4f9cf0', '#3fbf8f', '#3fbf8f', '#3fbf8f', '#ef5b5b']
 const APPLY_MS = 700
 const UNREAD = '?'
 const PANE = 'ClauDiscobombulating'
-// 3 cards of 12 (label 10 + border) and 2 gaps in one row — 2026-10-11
 const PANE_COLS = 38
 const TIMER_ROWS = 12
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
 const CACHE_TTL_MS = 3600000
-// a miss under 200k tokens is cheap to re-cache: no ask, no Haiku switch — user pick 2026-10-14
+// User chose 200k tokens as cheap re-cache threshold — 2026-10-16
 const CHEAP_MISS_TOKENS = 200000
 const CACHE_SHOW_BELOW = 55
 const ALERT_MIN = 10
@@ -201,7 +200,6 @@ function modelLabel(id: string) {
 }
 const isLevel = (v: unknown): v is string => typeof v === 'string' && EFFORTS.includes(v)
 const effortTone = (l: string) => EFFORT_COLORS[EFFORTS.indexOf(l)] ?? 'gray'
-// live-step hint for the subagents box: the argument that says most about the call — 2026-10-15
 const HINT_KEYS = ['file_path', 'notebook_path', 'path', 'command', 'pattern', 'query', 'url', 'skill', 'description', 'prompt']
 const HINT_FILE = new Set(['file_path', 'notebook_path', 'path'])
 const HINT_MAX = 26
@@ -230,7 +228,6 @@ function resetIn(iso?: string, now = Date.now()) {
   return m >= 60 ? `${Math.floor(m / 60)}${tr.hour} ${m % 60}${tr.min}` : `${m}${tr.min}`
 }
 
-// USERPROFILE is Windows-only, HOME covers macOS/Linux — 2026-10-06
 const homeDir = async ($: EngineInterface) => (await $.env.get('USERPROFILE')) || (await $.env.get('HOME'))
 
 async function note($: EngineInterface, line: string) {
@@ -297,7 +294,6 @@ async function widenConsole($: EngineInterface) {
 // the viewport leaves out a docked pane, so only its rows tell the window is short; width is the unplaced pane's trigger — 2026-10-14
 const isShort = () => view.rows > 0 && view.rows < FIT_ROWS
 
-// grows the window to show the whole mod, then checks the engine placed the pane; tries re-arm when the size changes — 2026-10-14
 async function fitPane($: EngineInterface): Promise<boolean> {
   if (!isFull) return false
   const size = `${view.columns}x${view.rows}`
@@ -334,7 +330,6 @@ function hsl(h: number, s: number, l: number) {
   }
   return `#${f(0)}${f(8)}${f(4)}`
 }
-// purple → pink → orange across n letters — 2026-10-11
 const glow = (n: number) => Array.from({ length: n }, (_, k) => hsl((280 + (k * 120) / Math.max(1, n - 1)) % 360, 0.75, 0.65))
 
 const cacheText = (min: number, tokens = 0) => (min <= 0 ? `⚠ Cache Miss${tokens > 0 ? ` ${kTok(tokens)}` : ''}` : `${tr.cache} ${min}${tr.min}`)
@@ -349,7 +344,6 @@ function ctxColor(n: number, white = 0) {
   return `#${ch(255 * Math.min(1, n / 600000))}${ch(255 * (1 - Math.min(1, Math.max(0, n - 600000) / 300000)))}${ch(0)}`
 }
 
-// minutes until the 1h prompt cache lapses; -1 while a turn runs or before any turn — 2026-10-06
 function cacheMinutes(now: number) {
   if (!lastActive || isBusy) return -1
   return Math.max(0, Math.ceil((CACHE_TTL_MS - (now - lastActive)) / 60000))
@@ -384,7 +378,6 @@ async function applyLang($: EngineInterface) {
   await update($, timer, t => (isDefault(t.text) && t.text !== tr.defaultText ? { ...t, text: tr.defaultText } : t))
 }
 
-// the terminal footer hides the timer for the first 5 min idle, the desktop footer shows it always — 2026-10-06
 const showsCache = (min: number, surface: string) => min >= 0 && (surface === 'desktop' || min <= CACHE_SHOW_BELOW)
 
 async function alertCache($: EngineInterface) {
@@ -402,7 +395,6 @@ async function alertCache($: EngineInterface) {
   await $.audio.play({ asset: 'assets/cache-alert.mp3' }).catch(err => note($, `alert failed ${String(err)}`))
 }
 
-// quiet at 99%+ limits and until 5 messages pass after a compact — 2026-10-06
 async function alertQuiet($: EngineInterface) {
   const five = (await read($, limits)).find(l => l.kind === 'five_hour')
   return (five?.percentUsed ?? 0) >= AUTO_COMPACT_AT || (await read($, sinceCompact)) < COMPACT_QUIET_MSGS
@@ -452,6 +444,17 @@ async function fireTimer($: EngineInterface) {
   await $.prompt.submit({ text: t.text || tr.defaultText, asUser: true })
 }
 
+async function compactEffort($: EngineInterface, effort: string) {
+  const previous = await $.env.get('CLAUDE_CODE_EFFORT_LEVEL')
+  // Claude Code compares env-resolved effort before its cache confirmation — 2026-10-16
+  await $.env.set('CLAUDE_CODE_EFFORT_LEVEL', effort)
+  try {
+    return await runInjected($, 'effort', effort)
+  } finally {
+    await $.env.set('CLAUDE_CODE_EFFORT_LEVEL', previous)
+  }
+}
+
 async function compact($: EngineInterface): Promise<boolean> {
   const model = await $.session.model()
   // live is only polled in full mode, so desktop reads the effort from the app flag or saved settings — 2026-10-06
@@ -459,11 +462,9 @@ async function compact($: EngineInterface): Promise<boolean> {
   const effort = (await read($, live)).effort || (isLevel(flagged) ? flagged : await savedEffort($, model))
   const fam = MODELS[modelIndex(model)]
   const isMiss = (await isCostlyMiss($))
-  // haiku takes the whole 1M window now and is the cheap one to re-read the context on — 2026-10-10
   const isSwitch = isMiss && fam?.family !== 'haiku'
   // medium on a miss: the summary decides what the context keeps, so it is worth the thinking — 2026-10-10
   const target = isMiss ? 'medium' : 'low'
-  // an unknown effort is left alone: nothing to set, nothing to restore — 2026-10-11
   const changed = isLevel(effort) && effort !== target
   try {
     if (isSwitch) {
@@ -471,7 +472,7 @@ async function compact($: EngineInterface): Promise<boolean> {
       await runInjected($, 'model', 'haiku')
     }
     // effort goes after a model switch: the app re-sends its own at every switch — 2026-10-10
-    if (changed) await runInjected($, 'effort', target)
+    if (changed) await compactEffort($, target)
     await runInjected($, 'compact')
     const doneAt = await $.clock.now()
     await update($, compactedAt, () => doneAt)
@@ -480,7 +481,6 @@ async function compact($: EngineInterface): Promise<boolean> {
   } catch (err) {
     $.ui.toast(tr.compactFailed)
     await note($, `compact failed ${String(err)}`)
-    // hold the grace so a failed attempt is retried after it, not every tick — 2026-10-06
     const failAt = await $.clock.now()
     await update($, compactedAt, () => failAt)
     return false
@@ -490,7 +490,7 @@ async function compact($: EngineInterface): Promise<boolean> {
       await update($, live, l => ({ ...l, model }))
     }
     if (isLevel(effort) && (isSwitch || changed)) {
-      await runInjected($, 'effort', effort).catch(() => undefined)
+      await compactEffort($, effort).catch(() => undefined)
       await update($, live, l => ({ ...l, effort }))
     }
   }
@@ -509,7 +509,6 @@ async function autoCompact($: EngineInterface) {
   isCompacting = true
   try {
     if (now - (await read($, compactedAt)) < COMPACT_GRACE_MS) return
-    // no resetsAt: a 5h wall bucket still allows one compact per window — 2026-10-11
     const key = five.resetsAt ?? `t${Math.floor(now / 18000000)}`
     if ((await read($, compactedFor)) === key) return
     $.ui.toast(tr.autoCompact(Math.floor(five.percentUsed)))
@@ -518,7 +517,6 @@ async function autoCompact($: EngineInterface) {
       isBusy = false
     }
     await note($, `auto compact at ${five.percentUsed}%`)
-    // the window is marked only once a compact stood, so a failed one can retry — 2026-10-06
     if (await compact($)) {
       compactedKey = key
       await update($, compactedFor, () => key)
@@ -591,7 +589,6 @@ async function poll($: EngineInterface) {
       const isGuess = !has && isCompacted && c.window > 0
       const tokens = isGuess ? await guessTokens($) : (c.tokens ?? 0)
       if (!isGuess) guessedAt = 0
-      // no reply yet in a fresh session: nothing to show — 2026-10-14
       const fresh: Context = { tokens, window: has || isGuess ? c.window : 0, percent: typeof c.percent === 'number' ? Math.round(c.percent) : tokens && c.window ? Math.round((tokens / c.window) * 100) : -1, isGuess }
       const seen = await read($, context)
       if (seen.tokens !== fresh.tokens || seen.window !== fresh.window || seen.percent !== fresh.percent || !seen.isGuess !== !fresh.isGuess) await update($, context, () => fresh)
@@ -611,7 +608,6 @@ async function poll($: EngineInterface) {
     const panes = await $.ui.panes().catch(() => [])
     const up = panes.some(x => x.id === PANE && x.isPlaced && x.isShown)
     if (up !== (await read($, paneUp))) await update($, paneUp, () => up)
-    // an unplaced pane or a window too short for it: ask for the size again, throttled and capped — 2026-10-14
     if ((!up && panes.some(x => x.id === PANE)) || isShort()) void fitPane($).catch(err => note($, `fit failed ${String(err)}`))
     const model = await $.session.model()
     const raw = ((await $.settings.read({ source: 'flag' })) as { effortLevel?: unknown }).effortLevel
@@ -760,7 +756,6 @@ function parseEffort(text: string) {
   return isLevel(level) ? level : undefined
 }
 
-// runs a /model or /effort the mod itself chose; onCommand leaves those unnoted — 2026-10-11
 async function runInjected($: EngineInterface, command: string, args?: string) {
   injected += 1
   try {
@@ -789,7 +784,6 @@ const onCommand: Hook<'command.run'> = async ($, e, next) => {
 // the desktop app drives the CLI headless: session.start says surface null, the app shows up later as an attach — 2026-10-06
 let pluginVersion = '?'
 let pluginRepo = 'Niedvin/ClauDiscobombulating'
-// manifest, so a version bump never drifts from the header — 2026-10-11
 async function loadVersion($: EngineInterface) {
   for (const p of [`${$.plugin.root}/.claude-plugin/plugin.json`, `${$.plugin.root}/plugin.json`]) {
     try {
@@ -824,7 +818,6 @@ async function checkVersion($: EngineInterface) {
   }
 }
 
-// the click on the header's new-version line: pull the release in, restart applies — 2026-10-11
 async function doUpdate($: EngineInterface) {
   try {
     const v = await read($, latest)
@@ -854,10 +847,8 @@ let countTimer: Timer | undefined
 
 const ctxTarget = () => ctxKnown + Math.round(ctxStreamed + ctxPending)
 
-// a real usage landing under the live guess is held till the turn ends: the count never drops while work runs — 2026-10-12
 const countGoal = () => (isBusy ? Math.max(ctxTarget(), shownN) : ctxTarget())
 
-// ≈4 chars a token in English, ≈2 in Cyrillic; the step's stop chunk replaces the guess — 2026-10-11
 function estTokens(s: string) {
   let n = 0
   for (let i = 0; i < s.length; i++) n += s.charCodeAt(i) < 128 ? 0.25 : 0.5
@@ -1036,7 +1027,6 @@ async function seedBindings($: EngineInterface) {
   const actions = new Set(all.map(([, a]) => a))
   const keys = new Set(all.map(([k]) => k.toLowerCase()))
   const add = Object.entries(DEFAULT_BINDS).filter(([k]) => !keys.has(k))
-  // a person who already bound either action set their own keys — 2026-10-14
   if (add.length > 0 && !actions.has(MODEL_NEXT) && !actions.has(EFFORT_UP)) {
     if (had) {
       const backup = `${dir}/.backups/keybindings.json.${Date.now()}`
@@ -1058,7 +1048,6 @@ async function seedBindings($: EngineInterface) {
 
 let modelChord = ''
 let effortChord = ''
-// the chord is whatever the person bound to the action, so the hint names theirs or nothing — 2026-10-11
 async function loadChord($: EngineInterface) {
   const dir = await configDir($)
   const kb = JSON.parse(await $.fs.read(`${dir}/keybindings.json`)) as { bindings?: { bindings?: Record<string, unknown> }[] }
@@ -1091,7 +1080,6 @@ async function enableFull($: EngineInterface, why: string) {
   void checkVersion($).catch(() => undefined)
   await $.command.register({ name: 'ClauDiscobombulating', description: 'Open the model and effort pane' })
   const opened = await openPane($, why)
-  // the pane the mod opens on its own waits below the dock threshold: grow the console to fit it — 2026-10-12
   growTries = 0
   if (!opened.isPlaced) void fitPane($)
   for (const m of MODELS) {
@@ -1169,7 +1157,6 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     const ls = e.rateLimits.map(l => ({ ...l }))
-    // empty = no reply yet in this session: keep the shared reading rather than blank the band — 2026-10-14
     if (ls.length > 0) {
       await update($, limits, () => ls)
       await shareLimits($, ls).catch(() => undefined)
@@ -1186,7 +1173,6 @@ export const register: Register = on => {
         await update($, compactedAt, () => doneAt)
         await update($, sinceCompact, () => 0)
         isCompacted = true
-        // compaction is its own API request, so the 1h cache timer restarts here — 2026-10-10
         lastActive = doneAt
         await update($, activeAt, () => doneAt)
       } catch {}
@@ -1216,12 +1202,10 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) {
-      // each run of an agent's loop is one turn; its end drops it from the box — 2026-10-15
       await dropAgent($, e.agentId)
       return next(e)
     }
     isBusy = false
-    // the held count settles to the real one only now that the turn is over — 2026-10-12
     kickCount($)
     lastActive = await $.clock.now()
     await update($, activeAt, () => lastActive)
@@ -1245,7 +1229,6 @@ export const register: Register = on => {
       let shown = ''
       for await (const c of stream) {
         try {
-          // the box follows text and tool starts; thinking keeps the step's own line — 2026-10-15
           const want = c.kind === 'text' ? `✎ ${tr.subWrite}` : c.kind === 'tool' ? `⚙ ${c.name} …` : ''
           if (want && want !== shown) {
             shown = want
@@ -1315,7 +1298,6 @@ export const register: Register = on => {
     }
   })
 
-  // a tracked agent's tool keeps its line on the box while the tool runs — 2026-10-15
   on('tool.call', async ($, e, next) => {
     const id = e.agentId
     if (!id || !(await read($, agents))[id]) return next(e)
@@ -1547,7 +1529,6 @@ export const register: Register = on => {
     // read only so the countdown redraws each minute — 2026-10-11
     await read($, minute)
     const cardRows = isWide ? 3 : 9
-    // a short pane drops the gaps, never cuts a block — 2026-10-11
     const gap = e.props.scroll.bodyRows >= headRows + TIMER_ROWS + cardRows + 6 + 3 ? 1 : 0
     const timerAt = headRows + gap
     const modelAt = timerAt + TIMER_ROWS + gap + cardRows + gap
@@ -1574,7 +1555,6 @@ export const register: Register = on => {
         </Button>
       </Box>
     )
-    // 2 rows an agent, a gap between, the border — 2026-10-15
     const subRows = agentList.length ? agentList.length * 3 + 1 : 0
     const tree = (
       <Box flexDirection="column" width={width} height={Math.max(e.props.scroll.bodyRows, modelAt + 6 + (agentList.length ? gap + subRows : 0))} backgroundColor="black">
@@ -1637,7 +1617,6 @@ export const register: Register = on => {
           'model',
           tr.model,
           <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={hue} paddingX={1} width={width}>
-            {/* the band hides its picker while the pane is up, so the chord actions live here too — 2026-10-11 */}
             <Box flexDirection="row" gap={2}>
               <Button key="m-prev" plain dimColor label="◀" action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
               <Text bold color={hue}>
