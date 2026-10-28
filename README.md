@@ -19,7 +19,7 @@ Mod for Claude Code (console + Claude desktop), plus a sidebar plugin for openco
 
 - **Auto compact:** when the 5h limit reaches 99%, a running turn is stopped and `/compact` runs, once per 5h window. Not when the 5h limit resets in less than 59 min: waiting is cheaper. Better a controlled compact now than the work dying on its own and re-reading the whole context after the reset. It does not resume the work afterwards. Skipped when a compaction (manual or the engine's own) already ran in the last 10 min. The limit is checked every 5 min below 75%, every minute from 75%, every 30 s from 90%, every second from 95%.
 - **Sessions** opens `/resume`. **Resume** sends `--resume` (console) and asks first when cache is already missed — not asked at 99%+ limits or right after a compact.
-- **Compact** on cache miss: switches to Haiku at medium effort (1M window now), compacts, restores model + effort.
+- **Compact** on cache miss: switches to Haiku at high effort (1M window now), compacts, restores model + effort.
 - **Language:** Ukrainian when the system language is Ukrainian, English otherwise (`d`, `h`, `m`, `send`, `cancel`, …). Force it with env `CLAUDISCOBOMBULATING_LANG=uk` or `en`.
 - **Limits shared between sessions:** every session shows the freshest limits, not only after its own first reply. Works on Windows, macOS and Linux.
 - Cache alert sound: `plugin/assets/cache-alert.mp3`, installed with the plugin. Windows: system toast + sound. macOS: sound (system player, `afplay`) + in-app toast. Other systems: in-app toast only.

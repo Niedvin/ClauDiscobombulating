@@ -463,8 +463,8 @@ async function compact($: EngineInterface): Promise<boolean> {
   const fam = MODELS[modelIndex(model)]
   const isMiss = (await isCostlyMiss($))
   const isSwitch = isMiss && fam?.family !== 'haiku'
-  // medium on a miss: the summary decides what the context keeps, so it is worth the thinking — 2026-10-10
-  const target = isMiss ? 'medium' : 'low'
+  // high on a miss: Haiku writes the summary that decides what the context keeps — 2026-10-28
+  const target = isMiss ? 'high' : 'low'
   const changed = isLevel(effort) && effort !== target
   try {
     if (isSwitch) {

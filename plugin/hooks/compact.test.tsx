@@ -51,14 +51,14 @@ test('compact on cache hit: effort low, compact, effort back', { timeoutMs: 2000
   expect(await run($, on, clock, 10, 'claude-opus-5-5', 'xhigh')).toEqual(['effort low', 'compact', 'effort xhigh'])
 })
 
-test('compact on cache miss: haiku medium, compact, model and effort back', { timeoutMs: 20000 }, async ($, on) => {
+test('compact on cache miss: haiku high, compact, model and effort back', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
-  expect(await run($, on, clock, 61, 'claude-opus-5-5', 'xhigh')).toEqual(['model haiku', 'effort medium', 'compact', 'model opus', 'effort xhigh'])
+  expect(await run($, on, clock, 61, 'claude-opus-5-5', 'xhigh')).toEqual(['model haiku', 'effort high', 'compact', 'model opus', 'effort xhigh'])
 })
 
-test('compact on cache miss while already on haiku raises effort to medium and restores it', { timeoutMs: 20000 }, async ($, on) => {
+test('compact on cache miss while already on haiku raises effort to high and restores it', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
-  expect(await run($, on, clock, 61, 'claude-haiku-5-5', 'low')).toEqual(['effort medium', 'compact', 'effort low'])
+  expect(await run($, on, clock, 61, 'claude-haiku-5-5', 'low')).toEqual(['effort high', 'compact', 'effort low'])
 })
 
 test('compact on cache hit while on haiku: effort low, effort back', { timeoutMs: 20000 }, async ($, on) => {
@@ -78,7 +78,7 @@ test('compact confirms cached effort changes and restores the original effort', 
 
 test('compact preserves an existing effort override across both effort changes', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
-  expect(await run($, on, clock, 61, 'claude-opus-5-5', 'xhigh', 300000, { override: 'xhigh' })).toEqual(['model haiku', 'effort medium', 'compact', 'model opus', 'effort xhigh'])
+  expect(await run($, on, clock, 61, 'claude-opus-5-5', 'xhigh', 300000, { override: 'xhigh' })).toEqual(['model haiku', 'effort high', 'compact', 'model opus', 'effort xhigh'])
 })
 
 test('failed compact still confirms effort restoration and removes its override', { timeoutMs: 20000 }, async ($, on) => {
