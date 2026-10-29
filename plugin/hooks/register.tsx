@@ -438,7 +438,10 @@ function doneLook(frame: number) {
 }
 
 // agent CLIs run as background shells (opencode run, claude -p, …): the person counts them as subagents — 2026-10-29
-const AGENT_CLI = /(?:^|[\s;&|(])(opencode|claude|codex|gemini|qwen|crush|goose|pi)(?:\.exe|\.cmd)?\s+(?:run|exec|-p|--print|--prompt|-m|--model)\b/
+const CLI_NAMES = 'opencode|claude|codex|gemini|qwen|crush|goose|pi'
+// a box without the CLI on PATH calls it by full path: `~/.opencode/bin/opencode run` — 2026-10-29
+const AGENT_CLI = new RegExp(`(?:^|[\\s;&|(])(?:\\S*[\\\\/])?(${CLI_NAMES})(?:\\.exe|\\.cmd|\\.bat)?\\s+(?:run|exec|-p|--print|--prompt|-m|--model)\\b`, 'i')
+const CLI_PROG = new RegExp(`^(?:.*[\\\\/])?(${CLI_NAMES})(?:\\.exe|\\.cmd|\\.bat)?$`, 'i')
 const CLI_MODEL = /\s(?:-m|--model)[\s=]+(\S+)/
 const CLI_EFFORT = /\s--(?:effort|thinking|variant|reasoning-effort)[\s=]+(\w+)/
 const OUT_FILE = /(?:\|\s*(?:tee|Tee-Object|Out-File)\s+(?:-(?:a|Append|FilePath)\s+)*|(?:^|[^\d&>])>>?\s*)([^\s;&|)<>]+)/
@@ -451,8 +454,12 @@ const TAIL_MS = 2000
 async function trackShell($: EngineInterface, id: string, command: string) {
   const quoted: string[] = []
   // quoted text and heredocs are prompts: a `>` or a CLI name inside them is prose — 2026-10-29
-  const bare = command.replace(HEREDOC, '').replace(QUOTED, q => `\u0000${quoted.push(q.slice(1, -1)) - 1}\u0000`)
-  const cli = AGENT_CLI.exec(bare)?.[1]
+  const bare = command.replace(HEREDOC, '').replace(QUOTED, q => {
+    const inner = q.slice(1, -1)
+    // but a quoted program path is the command itself: `& "C:\…\opencode.exe" run` — 2026-10-29
+    return CLI_PROG.test(inner) ? inner : `\u0000${quoted.push(inner) - 1}\u0000`
+  })
+  const cli = AGENT_CLI.exec(bare)?.[1]?.toLowerCase()
   if (!cli) return
   const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
   const vars: Record<string, string> = {}

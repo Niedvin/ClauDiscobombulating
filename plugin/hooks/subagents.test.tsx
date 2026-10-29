@@ -97,3 +97,32 @@ test('pane: a loop id the agent list does not name never draws', { timeoutMs: 20
   while (!(await stream.next()).done) {}
   expect(JSON.stringify(await pane.drawn())).not.toContain('Субагенти')
 })
+
+test('pane: an agent CLI reached by path or quoted path still gets a row', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let n = 0
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('tool.call', () => ({ result: { backgroundTaskId: `bg${++n}` } }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE_PROPS })
+  const text = async () => JSON.stringify(await pane.drawn())
+
+  await toolCall($, { tool: 'Bash', command: '~/.opencode/bin/opencode run -m "opencode-go/deepseek-v4.1-flash#high" --auto "audit" </dev/null' })
+  await clock.advance(400)
+  expect(await text()).toContain('Субагенти')
+  expect(await text()).toContain('opencode · deepseek-v4.1-flash')
+
+  await toolCall($, { tool: 'PowerShell', command: '& "C:\\Users\\me\\.opencode\\bin\\opencode.exe" run -m "opencode-go/kimi-k2#max" --auto "audit"' })
+  await clock.advance(400)
+  expect(await text()).toContain('opencode · kimi-k2')
+  expect(await text()).toContain('"max"')
+})
