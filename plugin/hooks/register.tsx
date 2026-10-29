@@ -514,6 +514,28 @@ function lastLine(text: string) {
   return { line, model }
 }
 
+// no redirect: the engine keeps the shell's output at <tmp>/claude*/<project>/<session>/tasks/<id>.output — 2026-10-30
+async function taskOutput($: EngineInterface, id: string) {
+  const sid = await $.session.id()
+  const vars = [
+    await $.env.get('TEMP').catch(() => undefined),
+    await $.env.get('TMP').catch(() => undefined),
+    await $.env.get('TMPDIR').catch(() => undefined),
+    '/tmp',
+  ]
+  const tmps = new Set(vars.filter((v): v is string => !!v).map(v => v.replace(/[\\/]+$/, '')))
+  for (const tmp of tmps) {
+    for (const top of await $.fs.list(tmp).catch(() => [])) {
+      if (top.kind !== 'dir' || !top.name.startsWith('claude')) continue
+      for (const proj of await $.fs.list(`${tmp}/${top.name}`).catch(() => [])) {
+        const file = `${tmp}/${top.name}/${proj.name}/${sid}/tasks/${id}.output`
+        if (proj.kind === 'dir' && (await $.fs.exists(file).catch(() => false))) return file
+      }
+    }
+  }
+  return ''
+}
+
 let tailAt = 0
 let tailing = false
 async function tailShells($: EngineInterface) {
@@ -523,12 +545,14 @@ async function tailShells($: EngineInterface) {
   tailing = true
   try {
     for (const [id, a] of Object.entries(await read($, agents))) {
-      if (!a.log || a.done) continue
-      const text = await $.fs.read(a.log).catch(() => '')
+      if (!a.cli || a.done) continue
+      const log = a.log || (await taskOutput($, id).catch(() => ''))
+      if (!log) continue
+      const text = await $.fs.read(log).catch(() => '')
       const got = lastLine(text)
       const line = got.line || a.line
       const model = a.model || got.model
-      if (line !== a.line || model !== a.model) await patchAgent($, id, { line, model })
+      if (line !== a.line || model !== a.model || log !== a.log) await patchAgent($, id, { line, model, log })
     }
   } finally {
     tailing = false

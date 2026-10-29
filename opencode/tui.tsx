@@ -3,7 +3,7 @@ import type { Renderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { spawn } from "node:child_process"
-import { readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -28,6 +28,8 @@ const BLUE = "#4f9cf0"
 const PURPLE = "#b678e0"
 const CYAN = "#56b6c2"
 const WHEEL_GAP_MS = 80
+const TREE_ROWS = 12
+const FOLDER = "#c9a36b"
 const DONE_MS = 2000
 const DONE_FRAME_MS = 80
 const DONE_TYPE_MS = 480
@@ -63,6 +65,8 @@ const UK = {
   model: "Модель",
   effortHint: "змінити",
   subagents: "Субагенти",
+  folder: "Папка",
+  here: "сюди",
   subStart: "стартує…",
   subThink: "думає…",
   done: "Готово",
@@ -87,6 +91,8 @@ const EN: typeof UK = {
   model: "Model",
   effortHint: "to change",
   subagents: "Subagents",
+  folder: "Folder",
+  here: "here",
   subStart: "starting…",
   subThink: "thinking…",
   done: "Done",
@@ -95,6 +101,7 @@ const EN: typeof UK = {
 
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
 const two = (n: number) => String(n).padStart(2, "0")
+const isRootDir = (p: string) => /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
 
 // typed in, held, then faded to grey before the row goes — 2026-10-30
 function doneLook(t: number, word: string) {
@@ -558,7 +565,81 @@ function setup(context: Ctx) {
           </Show>
         </box>
 
+        <Show when={p.sessionID}>
+          <Folder sessionID={sid()} />
+        </Show>
+
         <Show when={p.sessionID}>{sid => <Subagents sessionID={sid()} />}</Show>
+      </box>
+    )
+  }
+
+  // session.move re-roots the session; the store follows its session.moved event — 2026-10-30
+  function Folder(p: { sessionID: string }) {
+    const [open, setOpen] = createSignal(false)
+    const [dir, setDir] = createSignal("")
+    const [top, setTop] = createSignal(0)
+    const where = () => data.session.get(p.sessionID)?.location.directory ?? ""
+    const entries = createMemo(() => {
+      const d = dir()
+      if (!d) return [] as { name: string; path: string }[]
+      let dirs: string[] = []
+      try {
+        dirs = readdirSync(d, { withFileTypes: true })
+          .filter(e => e.isDirectory() && !e.name.startsWith("."))
+          .map(e => e.name)
+          .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+      } catch {}
+      const drives =
+        process.platform === "win32" && isRootDir(d)
+          ? [..."CDEFGHIJKLMNOPQRSTUVWXYZ"].filter(l => `${l}:` !== d.slice(0, 2).toUpperCase() && existsSync(`${l}:/`)).map(l => `${l}:`)
+          : []
+      return [...dirs.map(n => ({ name: n, path: path.join(d, n) })), ...drives.map(v => ({ name: v, path: `${v}/` }))]
+    })
+    const shown = createMemo(() => entries().slice(top(), top() + TREE_ROWS))
+    const enter = (d: string) => (setDir(d), setTop(0))
+    const toggle = () => {
+      if (!open()) enter(where())
+      setOpen(!open())
+    }
+    const pick = (d: string) => {
+      setOpen(false)
+      void client.session.move({ sessionID: p.sessionID, directory: d }).catch(err => ui.toast.show({ message: String(err).slice(0, 160), variant: "error" }))
+    }
+    const name = () => {
+      const b = path.basename(where()) || where()
+      return b.length > 22 ? `${b.slice(0, 21)}…` : b
+    }
+    return (
+      <box>
+        <box flexDirection="row" justifyContent="space-between" paddingX={1} onMouseUp={toggle}>
+          <text fg={FOLDER}>{`📁 ${tr().folder}  ${name()}`}</text>
+          <text fg={theme.text.muted}>{open() ? "▴" : "▾"}</text>
+        </box>
+        <Show when={open()}>
+          <box paddingX={1} onMouseScroll={e => setTop(t => Math.max(0, Math.min(Math.max(0, entries().length - TREE_ROWS), t + (e.scroll?.direction === "up" ? -1 : 1))))}>
+            <box flexDirection="row" justifyContent="space-between">
+              <Show when={!isRootDir(dir())} fallback={<text> </text>}>
+                <text fg={PURPLE} onMouseUp={() => enter(path.dirname(dir()))}>
+                  {"‹ .."}
+                </text>
+              </Show>
+              <text fg={GREEN} onMouseUp={() => pick(dir())}>{`✓ ${tr().here}`}</text>
+            </box>
+            <For each={shown()}>
+              {en => (
+                <box flexDirection="row" justifyContent="space-between">
+                  <text fg="#9ad0f0" onMouseUp={() => enter(en.path)}>
+                    {`▸ ${en.name.length > 28 ? `${en.name.slice(0, 27)}…` : en.name}`}
+                  </text>
+                  <text fg={GREEN} onMouseUp={() => pick(en.path)}>
+                    {"→"}
+                  </text>
+                </box>
+              )}
+            </For>
+          </box>
+        </Show>
       </box>
     )
   }
