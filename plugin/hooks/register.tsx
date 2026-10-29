@@ -119,6 +119,7 @@ const UK = {
   subStart: 'стартує…',
   subThink: 'думає…',
   subWrite: 'пише…',
+  done: 'Готово',
   sep: ' ',
   boom: 'БАХ!',
 }
@@ -155,6 +156,7 @@ const EN: typeof UK = {
   subStart: 'starting…',
   subThink: 'thinking…',
   subWrite: 'writing…',
+  done: 'Done',
   sep: ',',
   boom: 'BOOM!',
 }
@@ -253,16 +255,138 @@ async function adoptAgent($: EngineInterface, id: string) {
 }
 
 async function patchAgent($: EngineInterface, id: string, patch: Partial<AgentLive>) {
-  await update($, agents, a => (a[id] ? { ...a, [id]: { ...a[id], ...patch } } : a))
+  await update($, agents, a => (a[id] && !a[id].done ? { ...a, [id]: { ...a[id], ...patch } } : a))
 }
 
-async function dropAgent($: EngineInterface, id: string) {
+const DONE_MS = 2000
+const DONE_FRAME_MS = 80
+const DONE_TYPE_MS = 480
+const DONE_FADE_MS = 700
+const DONE_HUE = [0x3f, 0xbf, 0x8f]
+const DONE_DIM = [0x4a, 0x4a, 0x55]
+let doneEvery: Timer | undefined
+
+async function finishAgent($: EngineInterface, id: string) {
+  const at = await $.clock.now()
+  await update($, agents, a => (a[id] && !a[id].done ? { ...a, [id]: { ...a[id], done: at, frame: 0 } } : a))
+  doneEvery ??= $.clock.every(DONE_FRAME_MS, () => void stepDone($).catch(() => undefined))
+}
+
+async function stepDone($: EngineInterface) {
+  const now = await $.clock.now()
+  if (!Object.values(await read($, agents)).some(a => a.done)) {
+    doneEvery?.cancel()
+    doneEvery = undefined
+    return
+  }
   await update($, agents, a => {
-    if (!a[id]) return a
-    const left = { ...a }
-    delete left[id]
-    return left
+    const next = { ...a }
+    for (const [id, x] of Object.entries(a)) {
+      if (!x.done) continue
+      if (now - x.done >= DONE_MS) delete next[id]
+      else next[id] = { ...x, frame: Math.floor((now - x.done) / DONE_FRAME_MS) }
+    }
+    return next
   })
+}
+
+// typed in, held, then faded to the box's grey before the row goes — 2026-10-29
+function doneLook(frame: number) {
+  const t = frame * DONE_FRAME_MS
+  const word = tr.done
+  const n = Math.min(word.length, Math.ceil((t / DONE_TYPE_MS) * word.length))
+  const k = Math.min(1, Math.max(0, (t - (DONE_MS - DONE_FADE_MS)) / DONE_FADE_MS))
+  const color = `#${DONE_HUE.map((v, i) => Math.round(v + (DONE_DIM[i]! - v) * k).toString(16).padStart(2, '0')).join('')}`
+  return { text: `✓ ${word.slice(0, n)}`, color, bold: k < 0.5 }
+}
+
+// agent CLIs run as background shells (opencode run, claude -p, …): the person counts them as subagents — 2026-10-29
+const AGENT_CLI = /(?:^|[\s;&|(])(opencode|claude|codex|gemini|qwen|crush|goose|pi)(?:\.exe|\.cmd)?\s+(?:run|exec|-p|--print|--prompt|-m|--model)\b/
+const CLI_MODEL = /\s(?:-m|--model)[\s=]+(\S+)/
+const CLI_EFFORT = /\s--(?:effort|thinking|variant|reasoning-effort)[\s=]+(\w+)/
+const OUT_FILE = /(?:\|\s*(?:tee|Tee-Object|Out-File)\s+(?:-(?:a|Append|FilePath)\s+)*|(?:^|[^\d&>])>>?\s*)([^\s;&|)<>]+)/
+const HEREDOC = /<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g
+const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g
+const SHELL_HUE = '#4fd1c5'
+const TAIL_MS = 2000
+
+async function trackShell($: EngineInterface, id: string, command: string) {
+  const quoted: string[] = []
+  // quoted text and heredocs are prompts: a `>` or a CLI name inside them is prose — 2026-10-29
+  const bare = command.replace(HEREDOC, '').replace(QUOTED, q => `\u0000${quoted.push(q.slice(1, -1)) - 1}\u0000`)
+  const cli = AGENT_CLI.exec(bare)?.[1]
+  if (!cli) return
+  const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
+  const vars: Record<string, string> = {}
+  for (const m of bare.matchAll(/(?:^|[\s;&(])(\w+)=(\S*)/g)) vars[m[1]!] = unq(m[2]!)
+  const spec = unq(CLI_MODEL.exec(bare)?.[1] ?? '')
+  const [path, variant] = spec.split('#')
+  const effort = variant || unq(CLI_EFFORT.exec(bare)?.[1] ?? '')
+  let log = unq(OUT_FILE.exec(bare)?.[1] ?? '')
+  if (log) {
+    const home = (await homeDir($).catch(() => undefined)) || '~'
+    const env: Record<string, string | undefined> = {
+      TEMP: await $.env.get('TEMP').catch(() => undefined),
+      TMP: await $.env.get('TMP').catch(() => undefined),
+      LOCALAPPDATA: await $.env.get('LOCALAPPDATA').catch(() => undefined),
+      APPDATA: await $.env.get('APPDATA').catch(() => undefined),
+      HOME: home,
+      USERPROFILE: home,
+    }
+    const names = [...new Set([...log.matchAll(/\$\{?(\w+)\}?/g)].map(m => m[1]!))]
+    for (const n of names) {
+      const v = vars[n] ?? env[n] ?? ''
+      log = log.replace(new RegExp(`\\$\\{?${n}\\}?(?!\\w)`, 'g'), v)
+    }
+    log = log.replace(/^~(?=[\\/])/, home).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)
+    const cd = /(?:^|[;&]\s*)cd\s+(\S+)/.exec(bare)?.[1]
+    if (!/^([a-zA-Z]:)?[\\/]/.test(log) && cd) log = `${unq(cd).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)}/${log}`
+  }
+  const model = path ? (path.split('/').pop() ?? path) : ''
+  await update($, agents, a => ({ ...a, [id]: { model, effort, line: `✧ ${tr.subStart}`, cli, log } }))
+}
+
+async function shellCall($: EngineInterface, e: { agentId?: string; command?: unknown }, r: unknown) {
+  try {
+    const id = (r as { result?: { backgroundTaskId?: unknown } } | undefined)?.result?.backgroundTaskId
+    if (!e.agentId && typeof id === 'string' && typeof e.command === 'string') await trackShell($, id, e.command)
+  } catch {}
+}
+
+function lastLine(text: string) {
+  const lines = text.slice(-8192).replace(ANSI, '').split(/\r?\n|\r/)
+  let model = ''
+  let line = ''
+  for (let k = lines.length - 1; k >= 0 && !(line && model); k--) {
+    const s = (lines[k] ?? '').trim()
+    // opencode run heads each step with `> <agent> · <model>` — 2026-10-29
+    const head = /^> \S+ · (\S+)$/.exec(s)
+    if (head) model ||= head[1]!
+    else if (s && !line) line = s.replace(/(?:[A-Za-z]:)?[\\/]?(?:[^\s\\/]+[\\/])+([^\s\\/]+)/g, '$1')
+  }
+  return { line, model }
+}
+
+let tailAt = 0
+let tailing = false
+async function tailShells($: EngineInterface) {
+  const now = Date.now()
+  if (tailing || now - tailAt < TAIL_MS) return
+  tailAt = now
+  tailing = true
+  try {
+    for (const [id, a] of Object.entries(await read($, agents))) {
+      if (!a.log || a.done) continue
+      const text = await $.fs.read(a.log).catch(() => '')
+      const got = lastLine(text)
+      const line = got.line || a.line
+      const model = a.model || got.model
+      if (line !== a.line || model !== a.model) await patchAgent($, id, { line, model })
+    }
+  } finally {
+    tailing = false
+  }
 }
 
 type SavedSettings = { effortLevel?: unknown; modelSettings?: Record<string, { effortLevel?: unknown }> }
@@ -603,6 +727,7 @@ async function poll($: EngineInterface) {
     }
     void autoCompact($).catch(err => note($, `auto compact failed ${String(err)}`))
     if (!isFull) return
+    void tailShells($).catch(() => undefined)
     const m = Math.floor(tick / 60000)
     if (m !== (await read($, minute))) await update($, minute, () => m)
     const panes = await $.ui.panes().catch(() => [])
@@ -1202,7 +1327,7 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) {
-      await dropAgent($, e.agentId)
+      await finishAgent($, e.agentId)
       return next(e)
     }
     isBusy = false
@@ -1296,6 +1421,25 @@ export const register: Register = on => {
     } catch (err) {
       return { result: `probe failed: ${String(err)}` }
     }
+  })
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const r = await next(e)
+    await shellCall($, e, r)
+    return r
+  })
+  on('tool.call', { tool: 'PowerShell' }, async ($, e, next) => {
+    const r = await next(e)
+    await shellCall($, e, r)
+    return r
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin?.kind === 'task-notification') {
+      const id = /<task-id>([^<]+)<\/task-id>/.exec(e.text)?.[1]?.trim()
+      if (id) await finishAgent($, id).catch(() => undefined)
+    }
+    return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1675,12 +1819,24 @@ export const register: Register = on => {
                   <Box key={id} flexDirection="column">
                     {k > 0 ? <Box height={1} /> : null}
                     <Box flexDirection="row" justifyContent="space-between">
-                      <Text bold color={MODELS[modelIndex(a.model)]?.hue ?? 'gray'}>
-                        {modelLabel(a.model)}
-                      </Text>
-                      <Text color={effortTone(a.effort)}>{a.effort || 'auto'}</Text>
+                      {a.cli ? (
+                        <Text bold color={SHELL_HUE} wrap="truncate-end">
+                          {a.model ? `${a.cli} · ${a.model}` : a.cli}
+                        </Text>
+                      ) : (
+                        <Text bold color={MODELS[modelIndex(a.model)]?.hue ?? 'gray'}>
+                          {modelLabel(a.model)}
+                        </Text>
+                      )}
+                      <Text color={effortTone(a.effort)}>{a.effort || (a.cli ? '' : 'auto')}</Text>
                     </Box>
-                    <Text color="#9a9aab" wrap="truncate-end">{a.line}</Text>
+                    {a.done ? (
+                      <Text bold={doneLook(a.frame ?? 0).bold} color={doneLook(a.frame ?? 0).color}>
+                        {doneLook(a.frame ?? 0).text}
+                      </Text>
+                    ) : (
+                      <Text color="#9a9aab" wrap="truncate-end">{a.line}</Text>
+                    )}
                   </Box>
                 ))}
               </Box>,

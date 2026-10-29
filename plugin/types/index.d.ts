@@ -1,7 +1,7 @@
 export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
 export type Live = { model: string; effort: string }
 export type Pending = { model: string; effort: string }
-export type AgentLive = { model: string; effort: string; line: string }
+export type AgentLive = { model: string; effort: string; line: string; cli?: string; log?: string; done?: number; frame?: number }
 export type Timer = { at: number; text: string }
 export type Draft = { h: number; m: number; isSet: boolean }
 export type Context = { tokens: number; window: number; percent: number; isGuess?: boolean }

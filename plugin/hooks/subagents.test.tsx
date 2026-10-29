@@ -67,6 +67,10 @@ test('pane: the subagents box follows spawn, step, tool and completion', { timeo
   expect(await text()).not.toContain('thing.ts')
 
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', agentId: 'a1' })
+  await clock.advance(600)
+  expect(await text()).toContain('Готово')
+  expect(await text()).not.toContain('думає')
+  await clock.advance(2000)
   expect(await text()).not.toContain('Субагенти')
 })
 
