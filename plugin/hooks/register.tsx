@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Hook, Register, RenderElement, Timer, TurnStepChunk } from 'claude-code'
 
-import type { AgentLive, Context, Counted, Draft, Limit, Live, Pending, Timer as Alarm } from '../types'
+import type { AgentLive, Context, Counted, Draft, Limit, Live, Pending, Timer as Alarm, Tree } from '../types'
 import { DANCE_MS, REVEAL_MS, danceCells } from './dance'
 import type { Head } from './dance'
 
@@ -17,7 +17,9 @@ const APPLY_MS = 700
 const UNREAD = '?'
 const PANE = 'ClauDiscobombulating'
 const PANE_COLS = 38
-const TIMER_ROWS = 12
+const TIMER_ROWS = 8
+// border, padding, paddingLeft, `⏰ ` (wide glyph) and `HH`: the colon sits here — 2026-10-29
+const TIMER_COLON_COL = 10
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
@@ -35,6 +37,13 @@ const COUNT_FRAME_MS = 50
 const GUESS_EVERY_MS = 30000
 const DANCE_FRAME_MS = 40
 const STAGE_MIN_ROWS = 12
+// 5 frames at 40 ms is the ≈200 ms the folder tree unfolds (and folds) in — 2026-10-29
+const TREE_FRAMES = 5
+const TREE_FRAME_MS = 40
+// a new subagent row grows in one line per frame: its 3 lines over ≈250 ms — 2026-10-29
+const GROW_MS = 250
+const GROW_FRAME_MS = 40
+const TREE_MIN_ROWS = 3
 const ALERT_TITLE = 'ClauDiscobombulating'
 // no double quotes: argv reaches powershell.exe as one command line — 2026-10-06
 const ALERT_PS = `$ErrorActionPreference='Stop';Add-Type -AssemblyName PresentationCore;$p=New-Object System.Windows.Media.MediaPlayer;$p.Open([uri]$env:PB_SOUND);$p.Play();[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime];$x=New-Object Windows.Data.Xml.Dom.XmlDocument;$x.LoadXml('<toast><visual><binding template=''ToastGeneric''><text>'+$env:PB_TITLE+'</text><text>'+$env:PB_BODY+'</text></binding></visual><audio silent=''true''/></toast>');[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x));Start-Sleep -Seconds 5`
@@ -115,6 +124,8 @@ const UK = {
   chordHint: 'змінити',
   timer: 'Таймер',
   model: 'Модель',
+  folder: 'Папка',
+  here: 'сюди',
   subagents: 'Субагенти',
   subStart: 'стартує…',
   subThink: 'думає…',
@@ -152,6 +163,8 @@ const EN: typeof UK = {
   chordHint: 'to change',
   timer: 'Timer',
   model: 'Model',
+  folder: 'Folder',
+  here: 'here',
   subagents: 'Subagents',
   subStart: 'starting…',
   subThink: 'thinking…',
@@ -188,6 +201,10 @@ const countMode = atom({ plugin: 'ClauDiscobombulating', key: 'countMode' } as c
 const counted = atom({ plugin: 'ClauDiscobombulating', key: 'counted' } as const, { n: 0, prev: 0 } as Counted)
 const dance = atom({ plugin: 'ClauDiscobombulating', key: 'dance' } as const, 0)
 const reveal = atom({ plugin: 'ClauDiscobombulating', key: 'reveal' } as const, 1)
+const tree = atom({ plugin: 'ClauDiscobombulating', key: 'tree' } as const, { dir: '', dirs: [], drives: [], step: 0, mode: 'closed', top: 0 } as Tree)
+const cwd = atom({ plugin: 'ClauDiscobombulating', key: 'cwd' } as const, '')
+const agentsTop = atom({ plugin: 'ClauDiscobombulating', key: 'agentsTop' } as const, 0)
+const grow = atom({ plugin: 'ClauDiscobombulating', key: 'grow' } as const, 0)
 
 const modelIndex = (id: string) => MODELS.findIndex(m => id.toLowerCase().includes(m.family))
 const labels: Record<string, string> = {}
@@ -220,6 +237,7 @@ const within = (row: number, [a, b]: number[]) => row >= a && row <= b
 const wrap = (i: number, n: number) => ((i % n) + n) % n
 const tone = (p: number) => (p >= 90 ? '#ef5b5b' : p >= 70 ? '#f0b429' : '#3fbf8f')
 const shortName = (kind: string) => ({ five_hour: `5${tr.hour}`, seven_day: `7${tr.day}`, spend_limit: '$' })[kind as 'five_hour'] ?? kind
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n))
 
 function resetIn(iso?: string, now = Date.now()) {
   if (!iso) return ''
@@ -250,13 +268,132 @@ async function countSinceCompact($: EngineInterface) {
 async function adoptAgent($: EngineInterface, id: string) {
   if ((await read($, agents))[id]) return true
   const known = await $.agent.list().then(list => list.some(a => a.id === id)).catch(() => false)
-  if (known) await update($, agents, a => ({ ...a, [id]: { model: '', effort: '', line: `✧ ${tr.subThink}` } }))
+  if (known) {
+    const born = await $.clock.now()
+    await update($, agents, a => ({ ...a, [id]: { model: '', effort: '', line: `✧ ${tr.subThink}`, born } }))
+    kickGrow($)
+  }
   return known
 }
 
 async function patchAgent($: EngineInterface, id: string, patch: Partial<AgentLive>) {
   await update($, agents, a => (a[id] && !a[id].done ? { ...a, [id]: { ...a[id], ...patch } } : a))
 }
+
+const isRootDir = (p: string) => /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
+const joinDir = (dir: string, name: string) => (/[\\/]$/.test(dir) ? `${dir}${name}` : `${dir}/${name}`)
+
+function parentDir(dir: string) {
+  if (isRootDir(dir)) return dir
+  const cut = dir.replace(/[\\/]+$/, '')
+  const i = Math.max(cut.lastIndexOf('/'), cut.lastIndexOf('\\'))
+  const head = i > 0 ? cut.slice(0, i) : cut.slice(0, i + 1)
+  return /^[A-Za-z]:$/.test(head) ? `${head}/` : head
+}
+
+function baseName(p: string) {
+  const cut = p.replace(/[\\/]+$/, '')
+  return cut.split(/[\\/]/).pop() || p
+}
+
+// 23 probes at most, at a drive root: other drives are one row each, once per open — 2026-10-29
+async function otherDrives($: EngineInterface, dir: string) {
+  const own = dir.slice(0, 2).toUpperCase()
+  const found: string[] = []
+  for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
+    if (`${letter}:` === own) continue
+    if (await $.fs.exists(`${letter}:/`).catch(() => false)) found.push(`${letter}:`)
+  }
+  return found
+}
+
+async function listDirs($: EngineInterface, dir: string) {
+  const entries = await $.fs.list(dir).catch(() => [])
+  const dirs = entries
+    .filter(e => e.kind === 'dir' && !e.name.startsWith('.'))
+    .map(e => e.name)
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+  const isWin = (await $.env.get('OS').catch(() => undefined)) === 'Windows_NT'
+  const drives = isWin && isRootDir(dir) ? await otherDrives($, dir) : []
+  return { dirs, drives }
+}
+
+let treeEvery: Timer | undefined
+
+function kickTree($: EngineInterface) {
+  treeEvery ??= $.clock.every(TREE_FRAME_MS, () => void treeStep($))
+}
+
+async function treeStep($: EngineInterface) {
+  const t = await read($, tree)
+  const done = t.mode === 'closed' || (t.mode === 'open' ? t.step >= TREE_FRAMES : t.step <= 0)
+  if (done) {
+    if (t.mode === 'closing') await update($, tree, x => ({ ...x, mode: 'closed', step: 0 }) as Tree)
+    treeEvery?.cancel()
+    treeEvery = undefined
+    return
+  }
+  await update($, tree, x => ({ ...x, step: x.mode === 'open' ? Math.min(TREE_FRAMES, x.step + 1) : Math.max(0, x.step - 1) }) as Tree)
+}
+
+async function openTree($: EngineInterface) {
+  const dir = (await $.session.cwd().catch(() => '')) || (await read($, cwd))
+  if (!dir) return
+  const { dirs, drives } = await listDirs($, dir)
+  await update($, cwd, () => dir)
+  await update($, tree, () => ({ dir, dirs, drives, step: 0, mode: 'open', top: 0 }) as Tree)
+  kickTree($)
+}
+
+async function closeTree($: EngineInterface) {
+  const t = await read($, tree)
+  if (t.mode !== 'open') return
+  await update($, tree, x => ({ ...x, mode: 'closing' }) as Tree)
+  kickTree($)
+}
+
+async function toggleFolder($: EngineInterface) {
+  const t = await read($, tree)
+  if (t.mode === 'closed') await openTree($)
+  else if (t.mode === 'open') await closeTree($)
+}
+
+async function enterDir($: EngineInterface, dir: string) {
+  const { dirs, drives } = await listDirs($, dir)
+  await update($, tree, x => ({ ...x, dir, dirs, drives, top: 0 }) as Tree)
+}
+
+async function selectDir($: EngineInterface, dir: string) {
+  await closeTree($)
+  try {
+    await runInjected($, 'cd', dir)
+    const next = await $.session.cwd().catch(() => dir)
+    await update($, cwd, () => next)
+  } catch (err) {
+    $.ui.toast(String(err).slice(0, 160))
+  }
+}
+
+let growEvery: Timer | undefined
+
+function kickGrow($: EngineInterface) {
+  growEvery ??= $.clock.every(GROW_FRAME_MS, () => void growStep($))
+}
+
+async function growStep($: EngineInterface) {
+  const now = await $.clock.now()
+  const rows = Object.values(await read($, agents))
+  const isGrowing = rows.some(a => a.born !== undefined && now - a.born < GROW_MS)
+  // the last frame is the one that shows the full row, so it lands before the timer stops — 2026-10-29
+  await update($, grow, n => n + 1)
+  if (!isGrowing) {
+    growEvery?.cancel()
+    growEvery = undefined
+  }
+}
+
+// lines of a row still sliding in: 3 over GROW_MS, one per frame — 2026-10-29
+const hiddenLines = (a: AgentLive, now: number) => (a.born === undefined ? 0 : clamp(3 - Math.floor((now - a.born) / (GROW_MS / 3)), 0, 3))
 
 const DONE_MS = 2000
 const DONE_FRAME_MS = 80
@@ -344,7 +481,9 @@ async function trackShell($: EngineInterface, id: string, command: string) {
     if (!/^([a-zA-Z]:)?[\\/]/.test(log) && cd) log = `${unq(cd).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)}/${log}`
   }
   const model = path ? (path.split('/').pop() ?? path) : ''
-  await update($, agents, a => ({ ...a, [id]: { model, effort, line: `✧ ${tr.subStart}`, cli, log } }))
+  const born = await $.clock.now()
+  await update($, agents, a => ({ ...a, [id]: { model, effort, line: `✧ ${tr.subStart}`, cli, log, born } }))
+  kickGrow($)
 }
 
 async function shellCall($: EngineInterface, e: { agentId?: string; command?: unknown }, r: unknown) {
@@ -813,9 +952,17 @@ let modelTimer: Timer | undefined
 let pollEvery: Timer | undefined
 let injected = 0
 
+// a command mid-turn waits in the queue as a visible prompt: model applies at the turn's end, effort per step — 2026-10-29
+let stepEffort = ''
+let modelAfterTurn = false
+
 async function applyModel($: EngineInterface) {
   const p = await read($, pending)
   if (!p.model) return
+  if (isBusy) {
+    modelAfterTurn = true
+    return
+  }
   const cur = await read($, live)
   if (p.model !== cur.model) {
     try {
@@ -839,6 +986,12 @@ async function applyEffort($: EngineInterface) {
   const p = await read($, pending)
   if (!p.effort) return
   const cur = await read($, live)
+  if (isBusy) {
+    stepEffort = p.effort
+    await update($, live, l => ({ ...l, effort: p.effort }))
+    await update($, pending, q => (q.effort === p.effort ? { ...q, effort: '' } : q))
+    return
+  }
   if (p.effort !== cur.effort) {
     try {
       const r = await runInjected($, 'effort', p.effort)
@@ -1221,8 +1374,10 @@ async function enableFull($: EngineInterface, why: string) {
 
 export const register: Register = on => {
   let metrics: Record<string, unknown> = {}
-  let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1] }
+  let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
   let paneWidth = PANE_COLS
+  let treeMax = 0
+  let agentsMax = 0
   let lastWheel = 0
 
   on('session.start', async ($, e, next) => {
@@ -1242,6 +1397,10 @@ export const register: Register = on => {
       if (p.effort) effortTimer = $.clock.after(APPLY_MS, () => void applyEffort($))
       countOn = (await $.store.get('countMode').catch(() => undefined)) === true
       await update($, countMode, () => countOn)
+      await update($, tree, () => ({ dir: '', dirs: [], drives: [], step: 0, mode: 'closed', top: 0 }) as Tree)
+      await update($, agentsTop, () => 0)
+      const dir = await $.session.cwd().catch(() => '')
+      if (dir) await update($, cwd, () => dir)
       const dancing = await read($, dance)
       if (dancing > 0) {
         if ((await $.clock.now()) - dancing < DANCE_MS + REVEAL_MS) runDance($, dancing)
@@ -1319,7 +1478,9 @@ export const register: Register = on => {
     const r = await next(e)
     if (r?.agentId) {
       try {
-        await update($, agents, a => ({ ...a, [r.agentId!]: { model: r.model, effort: '', line: `✧ ${tr.subStart}` } }))
+        const born = await $.clock.now()
+        await update($, agents, a => ({ ...a, [r.agentId!]: { model: r.model, effort: '', line: `✧ ${tr.subStart}`, born } }))
+        kickGrow($)
       } catch {}
     }
     return r
@@ -1331,6 +1492,15 @@ export const register: Register = on => {
       return next(e)
     }
     isBusy = false
+    if (stepEffort) {
+      const level = stepEffort
+      stepEffort = ''
+      void runInjected($, 'effort', level).catch(err => note($, `/effort failed ${String(err)}`))
+    }
+    if (modelAfterTurn) {
+      modelAfterTurn = false
+      void applyModel($)
+    }
     kickCount($)
     lastActive = await $.clock.now()
     await update($, activeAt, () => lastActive)
@@ -1339,6 +1509,7 @@ export const register: Register = on => {
   })
 
   on('turn.step', async function* ($, e, next) {
+    if (stepEffort && !e.agentId) e = { ...e, effort: stepEffort as 'low' }
     if (isFull && !e.agentId && isLevel(e.effort)) {
       const p = await read($, pending)
       const cur = await read($, live)
@@ -1591,8 +1762,27 @@ export const register: Register = on => {
     // pointer rows count from the window's first row, the zones from the tree's — 2026-10-11
     const row = e.pointer?.row === undefined ? undefined : e.pointer.row + e.offset
     if (row === undefined || e.origin.kind !== 'person') return next(e)
-    const zone = within(row, paneRows.model) ? 'model' : within(row, paneRows.effort) ? 'effort' : within(row, paneRows.timer) ? 'timer' : ''
+    const zone = within(row, paneRows.tree)
+      ? 'tree'
+      : within(row, paneRows.agents)
+        ? 'agents'
+        : within(row, paneRows.model)
+          ? 'model'
+          : within(row, paneRows.effort)
+            ? 'effort'
+            : within(row, paneRows.timer)
+              ? 'timer'
+              : ''
     if (!zone) return next(e)
+    // the two lists take one row per event, no wheel debounce — 2026-10-29
+    if (zone === 'tree') {
+      await update($, tree, x => ({ ...x, top: clamp(x.top + (e.by < 0 ? -1 : 1), 0, treeMax) }) as Tree)
+      return {}
+    }
+    if (zone === 'agents') {
+      await update($, agentsTop, x => clamp(x + (e.by < 0 ? 1 : -1), 0, agentsMax))
+      return {}
+    }
     const dir = e.by < 0 ? 1 : -1
     // one wheel notch arrives as several events on Windows (3 lines per notch) — 2026-10-02
     const now = Date.now()
@@ -1603,7 +1793,7 @@ export const register: Register = on => {
     else {
       const col = e.pointer?.column ?? 0
       if ((await read($, timer).catch(() => ({ at: 0 }))).at) return next(e)
-      await nudgeDraft($, col < paneWidth / 2 ? 'h' : 'm', dir).catch(() => undefined)
+      await nudgeDraft($, col < TIMER_COLON_COL ? 'h' : 'm', dir).catch(() => undefined)
     }
     return {}
   })
@@ -1643,7 +1833,7 @@ export const register: Register = on => {
       const toRgb = (h: string | undefined) => parseInt((h ?? '#cccccc').slice(1), 16)
       const head: Head = { name: name.join(''), colors: hues.map(toRgb), tail: `  v${pluginVersion}`, update: hasUpdate ? `✦ ${tr.updateAvail} v${latestV}` : '', border: toRgb(hues[0]) }
       stage = { columns: width, rows, head }
-      paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1] }
+      paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
       const cells = danceCells(width, rows, Math.max(0, danceMs) / 1000, tr.boom, head)
       return (
         <Box flexDirection="column" width={width} height={rows} backgroundColor="black">
@@ -1654,7 +1844,7 @@ export const register: Register = on => {
     const cur = await read($, live)
     const p = await read($, pending)
     const agentV = await read($, agents)
-    const agentList = Object.entries(agentV)
+    const agentList = Object.entries(agentV).sort((a, b) => (a[1].born ?? 0) - (b[1].born ?? 0))
     const model = p.model || cur.model
     const effort = p.effort || cur.effort
     const i = modelIndex(model)
@@ -1664,6 +1854,7 @@ export const register: Register = on => {
     const alarm = await read($, timer)
     const d = await shownDraft($)
     const isArmed = alarm.at > 0
+    const isStockText = !alarm.text || alarm.text === tr.defaultText
     const at = isArmed ? new Date(alarm.at) : undefined
     const hh = at ? at.getHours() : d.h
     const mm = at ? at.getMinutes() : d.m
@@ -1672,11 +1863,13 @@ export const register: Register = on => {
     const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
     // read only so the countdown redraws each minute — 2026-10-11
     await read($, minute)
+    const body = e.props.scroll.bodyRows
     const cardRows = isWide ? 3 : 9
-    const gap = e.props.scroll.bodyRows >= headRows + TIMER_ROWS + cardRows + 6 + 3 ? 1 : 0
+    const gap = body >= headRows + TIMER_ROWS + cardRows + 6 + 3 ? 1 : 0
     const timerAt = headRows + gap
     const modelAt = timerAt + TIMER_ROWS + gap + cardRows + gap
-    paneRows = { timer: [timerAt + 1, timerAt + 3], model: [modelAt, modelAt + 2], effort: [modelAt + 3, modelAt + 5] }
+    const folderAt = modelAt + 6
+    const fixedRows = folderAt + 3
     paneWidth = width
     // a child cannot paint on its own border (clipped to the inside), so titles are later siblings — 2026-10-11
     const framed = (key: string, text: string, box: unknown, foot?: unknown) => (
@@ -1699,53 +1892,185 @@ export const register: Register = on => {
         </Button>
       </Box>
     )
-    const subRows = agentList.length ? agentList.length * 3 + 1 : 0
-    const tree = (
-      <Box flexDirection="column" width={width} height={Math.max(e.props.scroll.bodyRows, modelAt + 6 + (agentList.length ? gap + subRows : 0))} backgroundColor="black">
+    const t = await read($, tree)
+    const tNames = [...t.dirs, ...t.drives]
+    const tPaths = [...t.dirs.map(n => joinDir(t.dir, n)), ...t.drives.map(d => `${d}/`)]
+    const tCount = 1 + tNames.length
+    const tShown = t.mode === 'closed' ? 0 : Math.max(1, Math.ceil((t.step / TREE_FRAMES) * tCount))
+    const aNeed = agentList.length ? agentList.length * 3 + 1 : 0
+    // a missing clock must not fail the draw: the born frames then read real time — 2026-10-29
+    let now = Date.now()
+    try {
+      now = await $.clock.now()
+    } catch {}
+    // read only so the grow frames redraw the pane — 2026-10-29
+    await read($, grow)
+    const aHidden = agentList.reduce((n, [, a]) => n + hiddenLines(a, now), 0)
+    const free = body - fixedRows
+    let tRows = 0
+    let aRows = 0
+    let height = body
+    if (free < 0) {
+      // the fixed part alone is taller than the pane: it scrolls whole, as before — 2026-10-29
+      tRows = tShown
+      aRows = aNeed
+      height = fixedRows + tRows + aRows + (tRows && aRows ? 1 : 0)
+    } else if (tShown && aNeed) {
+      if (tShown + aNeed <= free) {
+        tRows = tShown
+        aRows = aNeed
+      } else {
+        aRows = Math.min(aNeed, Math.ceil(free / 2))
+        tRows = Math.max(0, free - aRows)
+        if (tRows < TREE_MIN_ROWS) {
+          tRows = Math.min(TREE_MIN_ROWS, free)
+          aRows = Math.max(0, free - tRows)
+        }
+      }
+    } else if (tShown) tRows = Math.min(tShown, free)
+    else if (aNeed) aRows = Math.min(aNeed, free)
+    if (aNeed > 0 && aRows >= aNeed) aRows = Math.max(1, aNeed - aHidden)
+    if (free >= 0 && tRows + aRows > free) aRows = Math.max(0, free - tRows)
+    const agentsAt = height - aRows
+    const treeTop = Math.min(t.top, Math.max(0, tCount - tRows))
+    const tView = Math.min(tShown, tRows)
+    const aInner = Math.max(0, aRows - 2)
+    const aMax = Math.max(0, agentList.length * 3 - 1 - aInner)
+    const aOff = Math.min(await read($, agentsTop), aMax)
+    const aStart = Math.max(0, agentList.length * 3 - 1 - aInner - aOff)
+    treeMax = Math.max(0, tCount - tRows)
+    agentsMax = aMax
+    paneRows = {
+      timer: [timerAt + 1, timerAt + 3],
+      model: [modelAt, modelAt + 2],
+      effort: [modelAt + 3, modelAt + 5],
+      tree: tRows > 0 ? [folderAt + 3, folderAt + 3 + tRows - 1] : [-1, -1],
+      agents: aRows > 2 ? [agentsAt + 1, agentsAt + aRows - 2] : [-1, -1],
+    }
+    const tW = Math.max(6, width - 2 - (tCount > tRows ? 1 : 0))
+    const bar = (key: string, total: number, top: number, rows: number) => {
+      if (total <= rows || rows <= 0) return null
+      const thumb = Math.max(1, Math.round((rows / total) * rows))
+      const at = Math.round((top / Math.max(1, total - rows)) * (rows - thumb))
+      return (
+        <Box key={key} flexDirection="column" width={1}>
+          {Array.from({ length: rows }, (_, i) =>
+            i >= at && i < at + thumb ? <Text key={`t${i}`} color="#e6e6ef">{'┃'}</Text> : <Text key={`t${i}`} dimColor>{'│'}</Text>,
+          )}
+        </Box>
+      )
+    }
+    const treeRow = (k: number) => {
+      const clip = (s: string) => (s.length > tW - 6 ? `${s.slice(0, Math.max(1, tW - 7))}…` : s)
+      if (k === 0) {
+        return (
+          <Box key="tree-up" flexDirection="row" justifyContent="space-between" height={1} width={tW}>
+            {isRootDir(t.dir) ? (
+              <Text>{' '}</Text>
+            ) : (
+              <Button key="up" plain onPress={() => enterDir($, parentDir(t.dir))}>
+                <Text color="#b678e0">{'‹ ..'}</Text>
+              </Button>
+            )}
+            <Button key="here" plain onPress={() => selectDir($, t.dir)}>
+              <Text color="#3fbf8f">{`✓ ${tr.here}`}</Text>
+            </Button>
+          </Box>
+        )
+      }
+      return (
+        <Box key={`tree-${k}`} flexDirection="row" justifyContent="space-between" height={1} width={tW}>
+          <Button key={`go-${k}`} plain onPress={() => enterDir($, tPaths[k - 1] ?? t.dir)}>
+            <Text color="#9ad0f0">{`▸ ${clip(tNames[k - 1] ?? '')}`}</Text>
+          </Button>
+          <Button key={`pick-${k}`} plain onPress={() => selectDir($, tPaths[k - 1] ?? t.dir)}>
+            <Text color="#3fbf8f">{'→'}</Text>
+          </Button>
+        </Box>
+      )
+    }
+    const aLines: RenderElement[] = []
+    agentList.forEach(([id, a], k) => {
+      if (k > 0) aLines.push(<Box key={`sp-${id}`} height={1} />)
+      aLines.push(
+        <Box key={`m-${id}`} flexDirection="row" justifyContent="space-between" height={1}>
+          {a.cli ? (
+            <Text bold color={SHELL_HUE} wrap="truncate-end">
+              {a.model ? `${a.cli} · ${a.model}` : a.cli}
+            </Text>
+          ) : (
+            <Text bold color={MODELS[modelIndex(a.model)]?.hue ?? 'gray'}>
+              {modelLabel(a.model)}
+            </Text>
+          )}
+          <Text color={effortTone(a.effort)}>{a.effort || (a.cli ? '' : 'auto')}</Text>
+        </Box>,
+      )
+      aLines.push(
+        <Box key={`l-${id}`} height={1}>
+          {a.done ? (
+            <Text bold={doneLook(a.frame ?? 0).bold} color={doneLook(a.frame ?? 0).color}>
+              {doneLook(a.frame ?? 0).text}
+            </Text>
+          ) : (
+            <Text color="#9a9aab" wrap="truncate-end">{a.line}</Text>
+          )}
+        </Box>,
+      )
+    })
+    const folder = await read($, cwd)
+    const folderName = folder ? baseName(folder) : ''
+    const folderMax = Math.max(4, width - 12)
+    const folderLabel = `📁 ${tr.folder}${folderName ? `  ${folderName.length > folderMax ? `${folderName.slice(0, folderMax - 1)}…` : folderName}` : ''}`
+    const pane = (
+      <Box flexDirection="column" width={width} height={height} overflow="hidden" backgroundColor="black">
         {banner}
         {gap ? <Box height={1} /> : null}
         {framed(
           'timer',
           tr.timer,
           <Box flexDirection="column" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} paddingX={1} width={width}>
-            <Box height={1} />
-            <Box flexDirection="row" justifyContent="center">
-              {isArmed ? (
-                <Text bold color="#f0b429">{`⏰ ${two(hh)} : ${two(mm)}`}</Text>
-              ) : (
-                <Box flexDirection="row">
-                  <Text>{'⏰ '}</Text>
-                  <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
-                    <Text bold color="#ececf1">{two(hh)}</Text>
+            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+              <Box flexDirection="column" paddingLeft={2}>
+                {isArmed ? (
+                  <Text bold color="#f0b429">{`⏰ ${two(hh)} : ${two(mm)}`}</Text>
+                ) : (
+                  <Box flexDirection="row">
+                    <Text>{'⏰ '}</Text>
+                    <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
+                      <Text bold color="#ececf1">{two(hh)}</Text>
+                    </Button>
+                    <Text dimColor>{' : '}</Text>
+                    <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
+                      <Text bold color="#ececf1">{two(mm)}</Text>
+                    </Button>
+                  </Box>
+                )}
+                <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
+              </Box>
+              <Box justifyContent="center" borderStyle="round" borderColor={isArmed ? '#6c6c7c' : '#3fbf8f'} paddingX={1}>
+                {isArmed ? (
+                  <Button key="timer-cancel" plain onPress={() => update($, timer, t => ({ ...t, at: 0 }))}>
+                    <Text color="#9a9aab">{tr.cancelBtn}</Text>
                   </Button>
-                  <Text dimColor>{' : '}</Text>
-                  <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
-                    <Text bold color="#ececf1">{two(mm)}</Text>
+                ) : (
+                  <Button key="timer-arm" plain onPress={() => armTimer($)}>
+                    <Text bold color="#3fbf8f">{tr.sendBtn}</Text>
                   </Button>
-                </Box>
-              )}
+                )}
+              </Box>
             </Box>
-            <Box flexDirection="row" justifyContent="center">
-              <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
-            </Box>
-            <Box height={1} />
             <Box flexDirection="row" borderStyle="round" borderColor={isArmed ? '#3a3a48' : '#9a9aab'} backgroundColor="#1c1c24" paddingX={1}>
               <Text color="#9a9aab">{'✎ '}</Text>
               {isArmed ? (
                 <Text color="#9a9aab" wrap="truncate-end">{alarm.text}</Text>
               ) : (
-                <Input key="timer-text" placeholder={tr.placeholder} submitLabel="" value={alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text })); await armTimer($) }} />
-              )}
-            </Box>
-            <Box justifyContent="center" borderStyle="round" borderColor={isArmed ? '#6c6c7c' : '#3fbf8f'}>
-              {isArmed ? (
-                <Button key="timer-cancel" plain onPress={() => update($, timer, t => ({ ...t, at: 0 }))}>
-                  <Text color="#9a9aab">{tr.cancelBtn}</Text>
-                </Button>
-              ) : (
-                <Button key="timer-arm" plain onPress={() => armTimer($)}>
-                  <Text bold color="#3fbf8f">{tr.sendBtn}</Text>
-                </Button>
+                <Box flexDirection="row" justifyContent="space-between" flexGrow={1}>
+                  {/* Input has no select-all: the untouched default rides as placeholder, so the first keystroke replaces it — 2026-10-29 */}
+                <Input key="timer-text" placeholder={isStockText ? tr.defaultText : tr.placeholder} submitLabel="" value={isStockText ? '' : alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text || tr.defaultText })); await armTimer($) }} />
+                  {/* the Input's own ⏎ is a hint only, a click on it does nothing — 2026-10-29 */}
+                  <Button key="timer-enter" plain label="⏎" onPress={() => armTimer($)} />
+                </Box>
               )}
             </Box>
           </Box>,
@@ -1809,43 +2134,44 @@ export const register: Register = on => {
             </Text>
           ) : null,
         )}
-        {agentList.length && gap ? <Box height={1} /> : null}
-        {agentList.length
+        {/* a borderless row under a gap: boxed like Model/Effort it read as one more picker — 2026-10-29 */}
+        <Box key="folder" flexDirection="column" width={width}>
+          <Box height={1} />
+          <Box flexDirection="row" justifyContent="space-between" width={width} paddingX={1}>
+            <Button key="folder-btn" plain onPress={() => toggleFolder($)}>
+              <Text color="#c9a36b">{folderLabel}</Text>
+            </Button>
+            <Button key="folder-arrow" plain dimColor label={tView > 0 ? '▴' : '▾'} onPress={() => toggleFolder($)} />
+          </Box>
+          <Text color="#3a3a48">{'╌'.repeat(width)}</Text>
+        </Box>
+        {tView > 0 ? (
+          <Box key="tree" flexDirection="row" width={width} height={tView} overflow="hidden" paddingX={1}>
+            <Box flexDirection="column" width={tW} overflow="hidden">
+              {Array.from({ length: tView }, (_, i) => treeRow(treeTop + i))}
+            </Box>
+            {tCount > tRows ? bar('tree-bar', tCount, treeTop, tView) : null}
+          </Box>
+        ) : null}
+        <Box key="fill" flexGrow={1} />
+        {aRows > 0
           ? framed(
               'subagents',
               tr.subagents,
-              <Box flexDirection="column" borderStyle="round" borderColor="#b678e0" paddingX={1} width={width}>
-                {agentList.map(([id, a], k) => (
-                  <Box key={id} flexDirection="column">
-                    {k > 0 ? <Box height={1} /> : null}
-                    <Box flexDirection="row" justifyContent="space-between">
-                      {a.cli ? (
-                        <Text bold color={SHELL_HUE} wrap="truncate-end">
-                          {a.model ? `${a.cli} · ${a.model}` : a.cli}
-                        </Text>
-                      ) : (
-                        <Text bold color={MODELS[modelIndex(a.model)]?.hue ?? 'gray'}>
-                          {modelLabel(a.model)}
-                        </Text>
-                      )}
-                      <Text color={effortTone(a.effort)}>{a.effort || (a.cli ? '' : 'auto')}</Text>
-                    </Box>
-                    {a.done ? (
-                      <Text bold={doneLook(a.frame ?? 0).bold} color={doneLook(a.frame ?? 0).color}>
-                        {doneLook(a.frame ?? 0).text}
-                      </Text>
-                    ) : (
-                      <Text color="#9a9aab" wrap="truncate-end">{a.line}</Text>
-                    )}
+              <Box flexDirection="column" borderStyle="round" borderColor="#b678e0" paddingX={1} width={width} height={aRows} overflow="hidden">
+                <Box flexDirection="row" height={aInner}>
+                  <Box flexDirection="column" flexGrow={1}>
+                    {aLines.slice(aStart, aStart + aInner)}
                   </Box>
-                ))}
+                  {aLines.length > aInner ? bar('agents-bar', aLines.length, aStart, aInner) : null}
+                </Box>
               </Box>,
             )
           : null}
       </Box>
     )
-    if (danceAt <= 0 || fadeK >= 1) return tree
-    return fadeTree(tree, fadeK, FG_RGB, (text, color) => <Text color={color}>{text}</Text>) as RenderElement
+    if (danceAt <= 0 || fadeK >= 1) return pane
+    return fadeTree(pane, fadeK, FG_RGB, (text, color) => <Text color={color}>{text}</Text>) as RenderElement
   })
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {

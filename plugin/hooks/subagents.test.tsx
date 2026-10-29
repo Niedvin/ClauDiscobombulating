@@ -45,6 +45,7 @@ test('pane: the subagents box follows spawn, step, tool and completion', { timeo
     background: true,
     fork: false,
   })
+  await clock.advance(300)
   expect(await text()).toContain('Субагенти')
   expect(await text()).toContain('Opus 5.5')
   expect(await text()).toContain('стартує')
