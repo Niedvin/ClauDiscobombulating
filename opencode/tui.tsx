@@ -459,10 +459,18 @@ function setup(context: Ctx) {
                   when={armed()}
                   fallback={
                     <>
-                      <text fg={theme.text.base}>{"⏰ "}</text>
-                      <Click label={two(draft().h)} bold onClick={() => nudge("h", 1)} onScroll={d => nudge("h", d)} />
-                      <text fg={theme.text.muted}>{":"}</text>
-                      <Click label={two(draft().m)} bold onClick={() => nudge("m", 1)} onScroll={d => nudge("m", d)} />
+                      <box flexDirection="row" onMouseUp={() => nudge("h", 1)} onMouseScroll={e => wheel(e, d => nudge("h", d))}>
+                        <text fg={theme.text.base}>{"⏰ "}</text>
+                        <text fg={theme.text.base}>
+                          <b>{two(draft().h)}</b>
+                        </text>
+                        <text fg={theme.text.muted}>{":"}</text>
+                      </box>
+                      <box paddingRight={3} onMouseUp={() => nudge("m", 1)} onMouseScroll={e => wheel(e, d => nudge("m", d))}>
+                        <text fg={theme.text.base}>
+                          <b>{two(draft().m)}</b>
+                        </text>
+                      </box>
                     </>
                   }
                 >
@@ -497,9 +505,9 @@ function setup(context: Ctx) {
             >
               <text fg={armed() ? theme.text.muted : theme.text.base}>{`✎ ${text()}`}</text>
               <Show when={!armed()}>
-                <text fg={GREEN} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
-                  {"⏎"}
-                </text>
+                <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
+                  <text fg={GREEN}>{"⏎"}</text>
+                </box>
               </Show>
             </box>
           </box>
@@ -540,17 +548,23 @@ function setup(context: Ctx) {
               titleColor={theme.text.muted}
               bottomTitle={chord() ? ` ${chord()} ${tr().effortHint} ` : undefined}
               bottomTitleAlignment="right"
-              paddingX={1}
+              paddingRight={1}
               flexDirection="row"
               justifyContent="space-between"
               onMouseScroll={e => wheel(e, cycleVariant)}
             >
-              <box flexDirection="row" gap={2}>
-                <Click label="◀" fg={theme.text.muted} onClick={() => cycleVariant(-1)} />
-                <text fg={hue()}>
-                  <b>{variant() ?? "default"}</b>
-                </text>
-                <Click label="▶" fg={theme.text.muted} onClick={() => cycleVariant(1)} />
+              <box flexDirection="row">
+                <box paddingX={1} onMouseUp={() => cycleVariant(-1)}>
+                  <text fg={theme.text.muted}>◀</text>
+                </box>
+                <box paddingX={1}>
+                  <text fg={hue()}>
+                    <b>{variant() ?? "default"}</b>
+                  </text>
+                </box>
+                <box paddingX={1} onMouseUp={() => cycleVariant(1)}>
+                  <text fg={theme.text.muted}>▶</text>
+                </box>
               </box>
               <text>
                 <For each={variants()}>
@@ -618,23 +632,24 @@ function setup(context: Ctx) {
         </box>
         <Show when={open()}>
           <box paddingX={1} onMouseScroll={e => setTop(t => Math.max(0, Math.min(Math.max(0, entries().length - TREE_ROWS), t + (e.scroll?.direction === "up" ? -1 : 1))))}>
-            <box flexDirection="row" justifyContent="space-between">
-              <Show when={!isRootDir(dir())} fallback={<text> </text>}>
-                <text fg={PURPLE} onMouseUp={() => enter(path.dirname(dir()))}>
-                  {"‹ .."}
-                </text>
-              </Show>
-              <text fg={GREEN} onMouseUp={() => pick(dir())}>{`✓ ${tr().here}`}</text>
+            {/* row halves are boxes: a press anywhere on one counts, not on its text only — 2026-10-30 */}
+            <box flexDirection="row">
+              <box flexGrow={1} onMouseUp={() => !isRootDir(dir()) && enter(path.dirname(dir()))}>
+                <text fg={PURPLE}>{isRootDir(dir()) ? " " : "‹ .."}</text>
+              </box>
+              <box paddingLeft={2} onMouseUp={() => pick(dir())}>
+                <text fg={GREEN}>{`✓ ${tr().here}`}</text>
+              </box>
             </box>
             <For each={shown()}>
               {en => (
-                <box flexDirection="row" justifyContent="space-between">
-                  <text fg="#9ad0f0" onMouseUp={() => enter(en.path)}>
-                    {`▸ ${en.name.length > 28 ? `${en.name.slice(0, 27)}…` : en.name}`}
-                  </text>
-                  <text fg={GREEN} onMouseUp={() => pick(en.path)}>
-                    {"→"}
-                  </text>
+                <box flexDirection="row">
+                  <box flexGrow={1} onMouseUp={() => enter(en.path)}>
+                    <text fg="#9ad0f0">{`▸ ${en.name.length > 28 ? `${en.name.slice(0, 27)}…` : en.name}`}</text>
+                  </box>
+                  <box paddingLeft={2} onMouseUp={() => pick(en.path)}>
+                    <text fg={GREEN}>{"→"}</text>
+                  </box>
                 </box>
               )}
             </For>

@@ -449,7 +449,7 @@ const HEREDOC = /<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g
 const SHELL_HUE = '#4fd1c5'
-const TAIL_MS = 2000
+const TAIL_MS = 3000
 
 async function trackShell($: EngineInterface, id: string, command: string) {
   const quoted: string[] = []
@@ -614,7 +614,28 @@ async function savedEffort($: EngineInterface, model: string) {
   return isLevel(st.effortLevel) ? st.effortLevel : ''
 }
 
-
+// cells as the engine lays them out: ☰ counts 2 (its card row came out 1 short in pyte) — 2026-10-30
+function cells(s: string) {
+  let n = 0
+  for (const ch of s) {
+    const c = ch.codePointAt(0) ?? 0
+    if (c === 0xfe0f || c === 0x200d) continue
+    const isWide =
+      (c >= 0x1100 && c <= 0x115f) ||
+      (c >= 0x2630 && c <= 0x2637) ||
+      (c >= 0x23e9 && c <= 0x23f3) ||
+      (c >= 0x2e80 && c <= 0xa4cf) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe4f) ||
+      (c >= 0xff00 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6) ||
+      (c >= 0x1f300 && c <= 0x1faff)
+    n += isWide ? 2 : 1
+  }
+  return n
+}
+const fit = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - cells(s)))
 const two = (n: number) => String(n).padStart(2, '0')
 function hsl(h: number, s: number, l: number) {
   const a = s * Math.min(l, 1 - l)
@@ -727,6 +748,12 @@ async function armTimer($: EngineInterface) {
   await update($, timer, t => ({ ...t, at }))
   await note($, `timer armed for ${new Date(at).toString()}`)
   $.ui.toast(tr.armed(`${two(d.h)}:${two(d.m)}`))
+}
+
+// a Button press leaves the keys with the prompt: the pane takes them first, or the focus is refused — 2026-10-30
+async function focusText($: EngineInterface) {
+  await $.ui.open({ id: PANE, title: 'ClauDiscobombulating', columns: PANE_COLS, focus: true })
+  await $.ui.focus({ requestId: PANE, key: 'timer-text' }).catch(() => undefined)
 }
 
 async function fireTimer($: EngineInterface) {
@@ -1747,27 +1774,26 @@ export const register: Register = on => {
         {up ? null : (
           <Box key="pick" flexDirection="row" alignItems="center" gap={1}>
             <Button key="to-pane" plain dimColor label={tr.toPane} onPress={() => openPane($, 'button')} />
-            <Box flexDirection="row" alignItems="center" gap={1} borderStyle="round" borderColor={hue} paddingX={1}>
-              <Button key="m-prev" plain dimColor label="◀" action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
+            <Box flexDirection="row" alignItems="center" borderStyle="round" borderColor={hue} paddingRight={modelChord ? 1 : 0}>
+              <Button key="m-prev" plain dimColor label=" ◀ " action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
               <Text bold color={hue}>
                 {modelLabel(model)}
                 {p.model ? ' •' : ''}
               </Text>
-              <Button key="m-next" plain dimColor label="▶" action={MODEL_NEXT} onPress={() => pick($, 'model', 1)} />
+              <Button key="m-next" plain dimColor label=" ▶ " action={MODEL_NEXT} onPress={() => pick($, 'model', 1)} />
               {modelChord ? <Text key="chord" dimColor>{modelChord}</Text> : null}
             </Box>
-            <Box flexDirection="row" alignItems="center" gap={1} borderStyle="round" borderColor={effortColor} paddingX={1}>
-              <Button key="e-prev" plain dimColor label="◀" action={EFFORT_DOWN} onPress={() => pick($, 'effort', -1)} />
+            <Box flexDirection="row" alignItems="center" borderStyle="round" borderColor={effortColor} paddingRight={effortChord ? 1 : 0}>
+              <Button key="e-prev" plain dimColor label=" ◀ " action={EFFORT_DOWN} onPress={() => pick($, 'effort', -1)} />
               <Text bold color={effortColor}>
-                {effort || 'auto'}
-                {p.effort ? ' •' : ''}
+                {`${effort || 'auto'}${p.effort ? ' •' : ''} `}
               </Text>
               <Text>
                 {EFFORTS.map((lv, k) => (
                   <Text key={lv} color={f >= 0 && k <= f ? EFFORT_COLORS[k] : 'gray'}>{'▁▃▄▆█'[k]}</Text>
                 ))}
               </Text>
-              <Button key="e-next" plain dimColor label="▶" action={EFFORT_UP} onPress={() => pick($, 'effort', 1)} />
+              <Button key="e-next" plain dimColor label=" ▶ " action={EFFORT_UP} onPress={() => pick($, 'effort', 1)} />
               {effortChord ? <Text key="chord" dimColor>{effortChord}</Text> : null}
             </Box>
           </Box>
@@ -1892,6 +1918,8 @@ export const register: Register = on => {
     const isWide = width >= PANE_COLS
     const cardW = isWide ? Math.floor((width - 2) / 3) : width
     const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
+    const fieldW = width - 4
+    const fillW = Math.max(0, fieldW - 8 - cells(isStockText ? tr.defaultText : alarm.text || tr.placeholder))
     // read only so the countdown redraws each minute — 2026-10-11
     await read($, minute)
     const body = e.props.scroll.bodyRows
@@ -1916,13 +1944,45 @@ export const register: Register = on => {
         ) : null}
       </Box>
     )
-    const card = (key: string, label: string, color: string, onPress: () => unknown) => (
-      <Box key={`card-${key}`} width={cardW} justifyContent="center" borderStyle="round" borderColor={color}>
-        <Button key={key} plain onPress={onPress}>
-          <Text color={color}>{label}</Text>
+    // a Box border takes no press: the same glyphs drawn over it as Buttons make the whole frame one target — 2026-10-30
+    const edges = (key: string, w: number, tall: number, color: string, onPress: () => unknown, bg?: string) => [
+      <Box key={`${key}-et`} position="absolute" top={0} left={0}>
+        <Button key={`${key}-et`} plain onPress={onPress}>
+          <Text color={color} backgroundColor={bg}>{`╭${'─'.repeat(w - 2)}╮`}</Text>
         </Button>
-      </Box>
-    )
+      </Box>,
+      <Box key={`${key}-eb`} position="absolute" bottom={0} left={0}>
+        <Button key={`${key}-eb`} plain onPress={onPress}>
+          <Text color={color} backgroundColor={bg}>{`╰${'─'.repeat(w - 2)}╯`}</Text>
+        </Button>
+      </Box>,
+      ...Array.from({ length: tall - 2 }, (_, r) => [
+        <Box key={`${key}-el${r}`} position="absolute" top={r + 1} left={0}>
+          <Button key={`${key}-el${r}`} plain onPress={onPress}>
+            <Text color={color} backgroundColor={bg}>{'│'}</Text>
+          </Button>
+        </Box>,
+        <Box key={`${key}-er${r}`} position="absolute" top={r + 1} right={0}>
+          <Button key={`${key}-er${r}`} plain onPress={onPress}>
+            <Text color={color} backgroundColor={bg}>{'│'}</Text>
+          </Button>
+        </Box>,
+      ]).flat(),
+    ]
+    const card = (key: string, label: string, color: string, onPress: () => unknown) => {
+      const inner = cardW - 2
+      const left = Math.max(0, Math.floor((inner - cells(label)) / 2))
+      return (
+        <Box key={`card-${key}`} flexDirection="column" width={cardW}>
+          <Box width={cardW} borderStyle="round" borderColor={color} overflow="hidden">
+            <Button key={key} plain onPress={onPress}>
+              <Text color={color}>{fit(' '.repeat(left) + label, inner)}</Text>
+            </Button>
+          </Box>
+          {edges(key, cardW, 3, color, onPress)}
+        </Box>
+      )
+    }
     const t = await read($, tree)
     const tNames = [...t.dirs, ...t.drives]
     const tPaths = [...t.dirs.map(n => joinDir(t.dir, n)), ...t.drives.map(d => `${d}/`)]
@@ -1994,17 +2054,17 @@ export const register: Register = on => {
     const treeRow = (k: number) => {
       const clip = (s: string) => (s.length > tW - 6 ? `${s.slice(0, Math.max(1, tW - 7))}…` : s)
       if (k === 0) {
+        const here = `  ✓ ${tr.here}`
+        const isRoot = isRootDir(t.dir)
         return (
           <Box key="tree-up" flexDirection="row" justifyContent="space-between" height={1} width={tW}>
-            {isRootDir(t.dir) ? (
-              <Text>{' '}</Text>
-            ) : (
+            {isRoot ? null : (
               <Button key="up" plain onPress={() => enterDir($, parentDir(t.dir))}>
-                <Text color="#b678e0">{'‹ ..'}</Text>
+                <Text color="#b678e0">{fit('‹ ..', tW - cells(here))}</Text>
               </Button>
             )}
             <Button key="here" plain onPress={() => selectDir($, t.dir)}>
-              <Text color="#3fbf8f">{`✓ ${tr.here}`}</Text>
+              <Text color="#3fbf8f">{isRoot ? ' '.repeat(Math.max(0, tW - cells(here))) + here : here}</Text>
             </Button>
           </Box>
         )
@@ -2012,10 +2072,10 @@ export const register: Register = on => {
       return (
         <Box key={`tree-${k}`} flexDirection="row" justifyContent="space-between" height={1} width={tW}>
           <Button key={`go-${k}`} plain onPress={() => enterDir($, tPaths[k - 1] ?? t.dir)}>
-            <Text color="#9ad0f0">{`▸ ${clip(tNames[k - 1] ?? '')}`}</Text>
+            <Text color="#9ad0f0">{fit(`▸ ${clip(tNames[k - 1] ?? '')}`, tW - 3)}</Text>
           </Button>
           <Button key={`pick-${k}`} plain onPress={() => selectDir($, tPaths[k - 1] ?? t.dir)}>
-            <Text color="#3fbf8f">{'→'}</Text>
+            <Text color="#3fbf8f">{'  →'}</Text>
           </Button>
         </Box>
       )
@@ -2066,24 +2126,25 @@ export const register: Register = on => {
                 <Text bold color="#f0b429">{`⏰ ${two(hh)}:${two(mm)}`}</Text>
               ) : (
                 <Box flexDirection="row">
-                  <Text>{'⏰ '}</Text>
                   <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
+                    <Text>{'⏰ '}</Text>
                     <Text bold color="#ececf1">{two(hh)}</Text>
+                    <Text dimColor>{':'}</Text>
                   </Button>
-                  <Text dimColor>{':'}</Text>
                   <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
                     <Text bold color="#ececf1">{two(mm)}</Text>
+                    <Text>{'   '}</Text>
                   </Button>
                 </Box>
               )}
-              <Box backgroundColor={isArmed ? '#2a2a34' : '#173d30'} paddingX={1}>
+              <Box backgroundColor={isArmed ? '#2a2a34' : '#173d30'}>
                 {isArmed ? (
                   <Button key="timer-cancel" plain onPress={() => update($, timer, t => ({ ...t, at: 0 }))}>
-                    <Text color="#9a9aab">{tr.cancelBtn}</Text>
+                    <Text color="#9a9aab">{` ${tr.cancelBtn} `}</Text>
                   </Button>
                 ) : (
                   <Button key="timer-arm" plain onPress={() => armTimer($)}>
-                    <Text bold color="#3fbf8f">{tr.sendBtn}</Text>
+                    <Text bold color="#3fbf8f">{` ${tr.sendBtn} `}</Text>
                   </Button>
                 )}
               </Box>
@@ -2092,19 +2153,33 @@ export const register: Register = on => {
             <Box paddingLeft={3}>
               <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
             </Box>
-            <Box flexDirection="row" borderStyle="round" borderColor={isArmed ? '#3a3a48' : '#9a9aab'} backgroundColor="#1c1c24" paddingX={1}>
-              <Text color="#9a9aab">{'✎ '}</Text>
-              {isArmed ? (
+            {isArmed ? (
+              <Box flexDirection="row" borderStyle="round" borderColor="#3a3a48" backgroundColor="#1c1c24" paddingX={1}>
+                <Text color="#9a9aab">{'✎ '}</Text>
                 <Text color="#9a9aab" wrap="truncate-end">{alarm.text}</Text>
-              ) : (
-                <Box flexDirection="row" justifyContent="space-between" flexGrow={1}>
+              </Box>
+            ) : (
+              <Box key="field" flexDirection="column" width={fieldW}>
+                <Box flexDirection="row" borderStyle="round" borderColor="#9a9aab" backgroundColor="#1c1c24" width={fieldW}>
+                  <Button key="timer-pen" plain onPress={() => focusText($)}>
+                    <Text color="#9a9aab">{' ✎ '}</Text>
+                  </Button>
                   {/* Input has no select-all: the untouched default rides as placeholder, so the first keystroke replaces it — 2026-10-29 */}
                   <Input key="timer-text" placeholder={isStockText ? tr.defaultText : tr.placeholder} submitLabel="" value={isStockText ? '' : alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text || tr.defaultText })); await armTimer($) }} />
+                  {/* the Input takes a press on its text only; shrinks when the focused Input draws its own ⏎ hint — 2026-10-30 */}
+                  <Box flexGrow={1} flexShrink={1} width={fillW} height={1} overflow="hidden">
+                    <Button key="timer-fill" plain onPress={() => focusText($)}>
+                      <Text>{' '.repeat(fillW)}</Text>
+                    </Button>
+                  </Box>
                   {/* the Input's own ⏎ is a hint only, a click on it does nothing — 2026-10-29 */}
-                  <Button key="timer-enter" plain label="⏎" onPress={() => armTimer($)} />
+                  <Button key="timer-enter" plain onPress={() => armTimer($)}>
+                    <Text>{' ⏎ '}</Text>
+                  </Button>
                 </Box>
-              )}
-            </Box>
+                {edges('field', fieldW, 3, '#9a9aab', () => focusText($), '#1c1c24')}
+              </Box>
+            )}
           </Box>,
         )}
         {gap ? <Box height={1} /> : null}
@@ -2117,14 +2192,13 @@ export const register: Register = on => {
         {framed(
           'model',
           tr.model,
-          <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={hue} paddingX={1} width={width}>
-            <Box flexDirection="row" gap={2}>
-              <Button key="m-prev" plain dimColor label="◀" action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
+          <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={hue} paddingRight={1} width={width}>
+            <Box flexDirection="row">
+              <Button key="m-prev" plain dimColor label=" ◀ " action={MODEL_PREV} onPress={() => pick($, 'model', -1)} />
               <Text bold color={hue}>
-                {modelLabel(model)}
-                {p.model ? ' •' : ''}
+                {` ${modelLabel(model)}${p.model ? ' •' : ''} `}
               </Text>
-              <Button key="m-next" plain dimColor label="▶" action={MODEL_NEXT} onPress={() => pick($, 'model', 1)} />
+              <Button key="m-next" plain dimColor label=" ▶ " action={MODEL_NEXT} onPress={() => pick($, 'model', 1)} />
             </Box>
             <Text>
               {MODELS.map((m, k) => (
@@ -2143,14 +2217,13 @@ export const register: Register = on => {
         {framed(
           'effort',
           'Effort',
-          <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={effortColor} paddingX={1} width={width}>
-            <Box flexDirection="row" gap={2}>
-              <Button key="e-prev" plain dimColor label="◀" action={EFFORT_DOWN} onPress={() => pick($, 'effort', -1)} />
+          <Box flexDirection="row" justifyContent="space-between" borderStyle="round" borderColor={effortColor} paddingRight={1} width={width}>
+            <Box flexDirection="row">
+              <Button key="e-prev" plain dimColor label=" ◀ " action={EFFORT_DOWN} onPress={() => pick($, 'effort', -1)} />
               <Text bold color={effortColor}>
-                {effort || 'auto'}
-                {p.effort ? ' •' : ''}
+                {` ${effort || 'auto'}${p.effort ? ' •' : ''} `}
               </Text>
-              <Button key="e-next" plain dimColor label="▶" action={EFFORT_UP} onPress={() => pick($, 'effort', 1)} />
+              <Button key="e-next" plain dimColor label=" ▶ " action={EFFORT_UP} onPress={() => pick($, 'effort', 1)} />
             </Box>
             <Text>
               {EFFORTS.map((lv, k) => (
@@ -2169,12 +2242,10 @@ export const register: Register = on => {
         {/* a borderless row under a gap: boxed like Model/Effort it read as one more picker — 2026-10-29 */}
         <Box key="folder" flexDirection="column" width={width}>
           <Box height={1} />
-          <Box flexDirection="row" justifyContent="space-between" width={width} paddingX={1}>
-            <Button key="folder-btn" plain onPress={() => toggleFolder($)}>
-              <Text color="#c9a36b">{folderLabel}</Text>
-            </Button>
-            <Button key="folder-arrow" plain dimColor label={tView > 0 ? '▴' : '▾'} onPress={() => toggleFolder($)} />
-          </Box>
+          <Button key="folder-btn" plain onPress={() => toggleFolder($)}>
+            <Text color="#c9a36b">{fit(` ${folderLabel}`, width - 2)}</Text>
+            <Text dimColor>{tView > 0 ? '▴ ' : '▾ '}</Text>
+          </Button>
           <Text color="#3a3a48">{'╌'.repeat(width)}</Text>
         </Box>
         {tView > 0 ? (
