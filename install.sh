@@ -9,6 +9,8 @@ CONFIG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS="$CONFIG/settings.json"
 OC_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
 OC_DIR="$OC_BASE/opencode/plugins/claudiscobombulating"
+PI_BASE="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+PI_EXT_DIR="$PI_BASE/extensions/claudiscobombulating"
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found in PATH" >&2; exit 1; }
 
@@ -26,6 +28,18 @@ install_opencode() {
     [ -s "$OC_DIR/$name.tmp" ] || { echo "$name is empty" >&2; exit 1; }
     mv -f "$OC_DIR/$name.tmp" "$OC_DIR/$name"
   done
+}
+
+install_pi() {
+  local clone="$CONFIG/plugins/marketplaces/$MARKET"
+  mkdir -p "$PI_EXT_DIR"
+  if [ -s "$clone/pi/index.ts" ]; then
+    cp "$clone/pi/index.ts" "$PI_EXT_DIR/index.ts.tmp"
+  else
+    curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/pi/index.ts?ref=main" -o "$PI_EXT_DIR/index.ts.tmp"
+  fi
+  [ -s "$PI_EXT_DIR/index.ts.tmp" ] || { echo "pi index.ts is empty" >&2; exit 1; }
+  mv -f "$PI_EXT_DIR/index.ts.tmp" "$PI_EXT_DIR/index.ts"
 }
 
 set_autoupdate() {
@@ -97,6 +111,7 @@ done
 if [ "${1:-}" = "--uninstall" ]; then
   set_autoupdate 0
   rm -rf "$OC_DIR"
+  rm -rf "$PI_EXT_DIR"
   echo "ClauDiscobombulating removed."
   exit 0
 fi
@@ -108,12 +123,20 @@ if command -v opencode >/dev/null 2>&1 || [ -d "$OC_BASE/opencode" ]; then
   { read -r answer </dev/tty; } 2>/dev/null || answer=""
   case "$answer" in [nN]*) ;; *) with_opencode=1 ;; esac
 fi
+with_pi=0
+if command -v pi >/dev/null 2>&1 || [ -d "$PI_BASE" ]; then
+  printf 'pi found. Install the pi extension too? [Y/n] '
+  { read -r answer </dev/tty; } 2>/dev/null || answer=""
+  case "$answer" in [nN]*) ;; *) with_pi=1 ;; esac
+fi
 
 claude plugin marketplace add "$REPO"
 claude plugin install "$PLUGIN" --scope user
 set_autoupdate 1
 [ "$with_opencode" = 1 ] && install_opencode
+[ "$with_pi" = 1 ] && install_pi
 echo "ClauDiscobombulating installed. Restart Claude Code and the desktop app."
 [ "$with_opencode" = 1 ] && echo "opencode plugin in $OC_DIR. Restart opencode."
+[ "$with_pi" = 1 ] && echo "pi extension in $PI_EXT_DIR. Restart pi."
 exit 0
 
