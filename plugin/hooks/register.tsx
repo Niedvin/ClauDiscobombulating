@@ -17,9 +17,9 @@ const APPLY_MS = 700
 const UNREAD = '?'
 const PANE = 'ClauDiscobombulating'
 const PANE_COLS = 38
-const TIMER_ROWS = 8
-// border, padding, paddingLeft, `⏰ ` (wide glyph) and `HH`: the colon sits here — 2026-10-29
-const TIMER_COLON_COL = 10
+const TIMER_ROWS = 7
+// border, padding, `⏰ ` (wide glyph), `HH`: colon at col 7 counts as hours — 2026-10-30
+const TIMER_COLON_COL = 8
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
@@ -1948,7 +1948,7 @@ export const register: Register = on => {
     treeMax = Math.max(0, tCount - tRows)
     agentsMax = aMax
     paneRows = {
-      timer: [timerAt + 1, timerAt + 3],
+      timer: [timerAt + 1, timerAt + 2],
       model: [modelAt, modelAt + 2],
       effort: [modelAt + 3, modelAt + 5],
       tree: tRows > 0 ? [folderAt + 3, folderAt + 3 + tRows - 1] : [-1, -1],
@@ -2037,25 +2037,22 @@ export const register: Register = on => {
           'timer',
           tr.timer,
           <Box flexDirection="column" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} paddingX={1} width={width}>
-            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-              <Box flexDirection="column" paddingLeft={2}>
-                {isArmed ? (
-                  <Text bold color="#f0b429">{`⏰ ${two(hh)} : ${two(mm)}`}</Text>
-                ) : (
-                  <Box flexDirection="row">
-                    <Text>{'⏰ '}</Text>
-                    <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
-                      <Text bold color="#ececf1">{two(hh)}</Text>
-                    </Button>
-                    <Text dimColor>{' : '}</Text>
-                    <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
-                      <Text bold color="#ececf1">{two(mm)}</Text>
-                    </Button>
-                  </Box>
-                )}
-                <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
-              </Box>
-              <Box justifyContent="center" borderStyle="round" borderColor={isArmed ? '#6c6c7c' : '#3fbf8f'} paddingX={1}>
+            <Box flexDirection="row" justifyContent="space-between">
+              {isArmed ? (
+                <Text bold color="#f0b429">{`⏰ ${two(hh)}:${two(mm)}`}</Text>
+              ) : (
+                <Box flexDirection="row">
+                  <Text>{'⏰ '}</Text>
+                  <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
+                    <Text bold color="#ececf1">{two(hh)}</Text>
+                  </Button>
+                  <Text dimColor>{':'}</Text>
+                  <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
+                    <Text bold color="#ececf1">{two(mm)}</Text>
+                  </Button>
+                </Box>
+              )}
+              <Box backgroundColor={isArmed ? '#2a2a34' : '#173d30'} paddingX={1}>
                 {isArmed ? (
                   <Button key="timer-cancel" plain onPress={() => update($, timer, t => ({ ...t, at: 0 }))}>
                     <Text color="#9a9aab">{tr.cancelBtn}</Text>
@@ -2067,6 +2064,10 @@ export const register: Register = on => {
                 )}
               </Box>
             </Box>
+            {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
+            <Box paddingLeft={3}>
+              <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
+            </Box>
             <Box flexDirection="row" borderStyle="round" borderColor={isArmed ? '#3a3a48' : '#9a9aab'} backgroundColor="#1c1c24" paddingX={1}>
               <Text color="#9a9aab">{'✎ '}</Text>
               {isArmed ? (
@@ -2074,7 +2075,7 @@ export const register: Register = on => {
               ) : (
                 <Box flexDirection="row" justifyContent="space-between" flexGrow={1}>
                   {/* Input has no select-all: the untouched default rides as placeholder, so the first keystroke replaces it — 2026-10-29 */}
-                <Input key="timer-text" placeholder={isStockText ? tr.defaultText : tr.placeholder} submitLabel="" value={isStockText ? '' : alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text || tr.defaultText })); await armTimer($) }} />
+                  <Input key="timer-text" placeholder={isStockText ? tr.defaultText : tr.placeholder} submitLabel="" value={isStockText ? '' : alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text || tr.defaultText })); await armTimer($) }} />
                   {/* the Input's own ⏎ is a hint only, a click on it does nothing — 2026-10-29 */}
                   <Button key="timer-enter" plain label="⏎" onPress={() => armTimer($)} />
                 </Box>

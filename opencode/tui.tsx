@@ -28,6 +28,12 @@ const BLUE = "#4f9cf0"
 const PURPLE = "#b678e0"
 const CYAN = "#56b6c2"
 const WHEEL_GAP_MS = 80
+const DONE_MS = 2000
+const DONE_FRAME_MS = 80
+const DONE_TYPE_MS = 480
+const DONE_FADE_MS = 700
+const DONE_HUE = [0x3f, 0xbf, 0x8f]
+const DONE_DIM = [0x4a, 0x4a, 0x55]
 // opencode's own session sidebar: 42 wide, shown above 120 columns — 2026-10-11
 const SIDEBAR_W = 42
 const SIDEBAR_FROM = 120
@@ -59,6 +65,7 @@ const UK = {
   subagents: "Субагенти",
   subStart: "стартує…",
   subThink: "думає…",
+  done: "Готово",
   subWrite: "пише…",
 }
 const EN: typeof UK = {
@@ -82,11 +89,20 @@ const EN: typeof UK = {
   subagents: "Subagents",
   subStart: "starting…",
   subThink: "thinking…",
+  done: "Done",
   subWrite: "writing…",
 }
 
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
 const two = (n: number) => String(n).padStart(2, "0")
+
+// typed in, held, then faded to grey before the row goes — 2026-10-30
+function doneLook(t: number, word: string) {
+  const n = Math.min(word.length, Math.ceil((t / DONE_TYPE_MS) * word.length))
+  const k = Math.min(1, Math.max(0, (t - (DONE_MS - DONE_FADE_MS)) / DONE_FADE_MS))
+  const color = `#${DONE_HUE.map((v, i) => Math.round(v + (DONE_DIM[i]! - v) * k).toString(16).padStart(2, "0")).join("")}`
+  return { text: `✓ ${word.slice(0, n)}`, color }
+}
 function hsl(h: number, s: number, l: number) {
   const a = s * Math.min(l, 1 - l)
   const f = (n: number) => {
@@ -409,7 +425,10 @@ function setup(context: Ctx) {
     const chord = createMemo(() => keymap.shortcuts("variant.cycle")[0])
     const draft = createMemo(() => shownDraft())
     const armed = () => mem.timer.at > 0
-    const text = () => `«${mem.timer.text || tr().defaultText}»`
+    const text = () => {
+      const s = (mem.timer.text || tr().defaultText).split("\n")[0]!
+      return s.length > 26 ? `${s.slice(0, 25)}…` : s
+    }
     const fireAt = () => (armed() ? mem.timer.at : nextAt(draft().h, draft().m, now()))
     return (
       <box gap={1}>
@@ -426,39 +445,55 @@ function setup(context: Ctx) {
         </box>
 
         <Show when={p.sessionID}>
-          <box border borderStyle="rounded" borderColor={armed() ? YELLOW : theme.border.base} title={` ${tr().timer} `} titleColor={theme.text.muted} paddingX={1} paddingTop={1}>
-            <box flexDirection="row" justifyContent="center">
-              <Show
-                when={armed()}
-                fallback={
-                  <>
-                    <text fg={theme.text.base}>{"⏰ "}</text>
-                    <Click label={two(draft().h)} bold onClick={() => nudge("h", 1)} onScroll={d => nudge("h", d)} />
-                    <text fg={theme.text.muted}>{" : "}</text>
-                    <Click label={two(draft().m)} bold onClick={() => nudge("m", 1)} onScroll={d => nudge("m", d)} />
-                  </>
-                }
+          <box border borderStyle="rounded" borderColor={armed() ? YELLOW : theme.border.base} title={` ${tr().timer} `} titleColor={theme.text.muted} paddingX={1}>
+            <box flexDirection="row" justifyContent="space-between">
+              <box flexDirection="row">
+                <Show
+                  when={armed()}
+                  fallback={
+                    <>
+                      <text fg={theme.text.base}>{"⏰ "}</text>
+                      <Click label={two(draft().h)} bold onClick={() => nudge("h", 1)} onScroll={d => nudge("h", d)} />
+                      <text fg={theme.text.muted}>{":"}</text>
+                      <Click label={two(draft().m)} bold onClick={() => nudge("m", 1)} onScroll={d => nudge("m", d)} />
+                    </>
+                  }
+                >
+                  <text fg={YELLOW}>
+                    <b>{`⏰ ${two(new Date(mem.timer.at).getHours())}:${two(new Date(mem.timer.at).getMinutes())}`}</b>
+                  </text>
+                </Show>
+              </box>
+              <box
+                backgroundColor={armed() ? "#2a2a34" : "#173d30"}
+                paddingX={1}
+                onMouseUp={() => (armed() ? setMem(s => void (s.timer = { ...s.timer, at: 0 })) : arm(sid()))}
               >
-                <text fg={YELLOW}>
-                  <b>{`⏰ ${two(new Date(mem.timer.at).getHours())} : ${two(new Date(mem.timer.at).getMinutes())}`}</b>
+                <text fg={armed() ? theme.text.muted : GREEN}>
+                  <b>{armed() ? tr().cancelBtn : tr().sendBtn}</b>
                 </text>
-              </Show>
+              </box>
             </box>
-            <box flexDirection="row" justifyContent="center">
+            {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
+            <box paddingLeft={3}>
               <text fg={theme.text.muted}>{`${tr().via} ${resetIn(new Date(fireAt()).toISOString(), now())}`}</text>
             </box>
-            <box height={1} />
-            <Click label={`✎ ${text()}`} fg={armed() ? theme.text.muted : theme.text.base} onClick={() => !armed() && void editText()} />
             <box
               border
               borderStyle="rounded"
-              borderColor={armed() ? theme.border.base : GREEN}
-              alignItems="center"
-              onMouseUp={() => (armed() ? setMem(s => void (s.timer = { ...s.timer, at: 0 })) : arm(sid()))}
+              borderColor={armed() ? theme.border.base : theme.text.muted}
+              backgroundColor="#1c1c24"
+              paddingX={1}
+              flexDirection="row"
+              justifyContent="space-between"
+              onMouseUp={() => !armed() && void editText()}
             >
-              <text fg={armed() ? theme.text.muted : GREEN}>
-                <b>{armed() ? tr().cancelBtn : tr().sendBtn}</b>
-              </text>
+              <text fg={armed() ? theme.text.muted : theme.text.base}>{`✎ ${text()}`}</text>
+              <Show when={!armed()}>
+                <text fg={GREEN} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
+                  {"⏎"}
+                </text>
+              </Show>
             </box>
           </box>
         </Show>
@@ -548,6 +583,26 @@ function setup(context: Ctx) {
         void data.session.message.sync(id).catch(() => undefined)
       }
     })
+    type Row = { s: ReturnType<typeof running>[number]; at: number }
+    const [finished, setFinished] = createSignal<Row[]>([])
+    const [frameAt, setFrameAt] = createSignal(Date.now())
+    let seen = new Map<string, Row["s"]>()
+    createEffect(() => {
+      const list = running()
+      const ids = new Set(list.map(s => s.id))
+      const gone = [...seen.values()].filter(s => !ids.has(s.id))
+      const at = Date.now()
+      if (gone.length) setFinished(f => [...f.filter(x => !ids.has(x.s.id)), ...gone.map(s => ({ s, at }))])
+      seen = new Map(list.map(s => [s.id, s]))
+    })
+    const ticker = setInterval(() => {
+      if (!finished().length) return
+      const t = Date.now()
+      setFrameAt(t)
+      if (finished().some(x => t - x.at >= DONE_MS)) setFinished(f => f.filter(x => t - x.at < DONE_MS))
+    }, DONE_FRAME_MS)
+    onCleanup(() => clearInterval(ticker))
+    const rows = createMemo(() => [...running().map(s => ({ s, at: 0 })), ...finished()].toSorted((a, b) => a.s.time.created - b.s.time.created))
     const modelOf = (id: string) => {
       const last = data.session.message.list(id).findLast(m => m.type === "assistant")
       const ref = (last?.type === "assistant" ? last.model : undefined) ?? data.session.get(id)?.model
@@ -574,12 +629,13 @@ function setup(context: Ctx) {
       return { glyph: "✧", text: tr().subThink }
     }
     return (
-      <Show when={running().length > 0}>
+      <Show when={rows().length > 0}>
         <box border borderStyle="rounded" borderColor={PURPLE} title={` ${tr().subagents} `} titleColor={theme.text.muted} paddingX={1}>
-          <For each={running()}>
-            {(s, i) => {
+          <For each={rows()}>
+            {({ s, at }, i) => {
               const m = createMemo(() => modelOf(s.id))
               const a = createMemo(() => activityOf(s.id))
+              const done = createMemo(() => (at ? doneLook(frameAt() - at, tr().done) : undefined))
               return (
                 <box>
                   <Show when={i() > 0}>
@@ -591,7 +647,11 @@ function setup(context: Ctx) {
                     </text>
                     <text fg={effortHue(m().effort) ?? theme.text.muted}>{m().effort ?? "default"}</text>
                   </box>
-                  <text fg={theme.text.muted}>{`${a().glyph} ${a().text}`}</text>
+                  <Show when={done()} fallback={<text fg={theme.text.muted}>{`${a().glyph} ${a().text}`}</text>}>
+                    <text fg={done()?.color}>
+                      <b>{done()?.text}</b>
+                    </text>
+                  </Show>
                 </box>
               )
             }}
