@@ -450,8 +450,11 @@ const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g
 const QUOTED = /"(?:\\.|[^"\\])*"|'[^']*'/g
 const SHELL_HUE = '#4fd1c5'
 const TAIL_MS = 3000
+// `cmd > log 2>&1 &` in a foreground call: no task id, no notification, so the log going quiet ends it — 2026-10-31
+const DETACH = /(?<![>&|])&(?![&>\d])|\bStart-Process\b|\bstart\s+\/b\b/i
+const DETACHED_IDLE_MS = 10 * 60_000
 
-async function trackShell($: EngineInterface, id: string, command: string) {
+async function trackShell($: EngineInterface, id: string, command: string, detached = false) {
   const quoted: string[] = []
   // quoted text and heredocs are prompts: a `>` or a CLI name inside them is prose — 2026-10-29
   const bare = command.replace(HEREDOC, '').replace(QUOTED, q => {
@@ -460,7 +463,7 @@ async function trackShell($: EngineInterface, id: string, command: string) {
     return CLI_PROG.test(inner) ? inner : `\u0000${quoted.push(inner) - 1}\u0000`
   })
   const cli = AGENT_CLI.exec(bare)?.[1]?.toLowerCase()
-  if (!cli) return
+  if (!cli || (detached && !DETACH.test(bare))) return
   const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
   const vars: Record<string, string> = {}
   for (const m of bare.matchAll(/(?:^|[\s;&(])(\w+)=(\S*)/g)) vars[m[1]!] = unq(m[2]!)
@@ -487,16 +490,25 @@ async function trackShell($: EngineInterface, id: string, command: string) {
     const cd = /(?:^|[;&]\s*)cd\s+(\S+)/.exec(bare)?.[1]
     if (!/^([a-zA-Z]:)?[\\/]/.test(log) && cd) log = `${unq(cd).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)}/${log}`
   }
+  if (detached && !log) return
   const model = path ? (path.split('/').pop() ?? path) : ''
   const born = await $.clock.now()
-  await update($, agents, a => ({ ...a, [id]: { model, effort, line: `✧ ${tr.subStart}`, cli, log, born } }))
+  await update($, agents, a => ({ ...a, [id]: { model, effort, line: `✧ ${tr.subStart}`, cli, log, born, ...(detached ? { detached } : {}) } }))
   kickGrow($)
 }
 
 async function shellCall($: EngineInterface, e: { agentId?: string; command?: unknown }, r: unknown) {
   try {
     const id = (r as { result?: { backgroundTaskId?: unknown } } | undefined)?.result?.backgroundTaskId
-    if (!e.agentId && typeof id === 'string' && typeof e.command === 'string') await trackShell($, id, e.command)
+    if (e.agentId || typeof e.command !== 'string') return
+    if (typeof id === 'string') {
+      await trackShell($, id, e.command)
+      return
+    }
+    // one line per launch: two detached agents in one call are two rows — 2026-10-31
+    const lines = e.command.replace(HEREDOC, '').split(/\r?\n/)
+    const at = await $.clock.now()
+    for (const [k, line] of lines.entries()) await trackShell($, `detached:${at}:${k}`, line, true)
   } catch {}
 }
 
@@ -548,6 +560,13 @@ async function tailShells($: EngineInterface) {
       if (!a.cli || a.done) continue
       const log = a.log || (await taskOutput($, id).catch(() => ''))
       if (!log) continue
+      if (a.detached) {
+        const stat = await $.fs.stat(log).catch(() => undefined)
+        if (stat && now - stat.mtimeMs >= DETACHED_IDLE_MS && now - (a.born ?? 0) >= DETACHED_IDLE_MS) {
+          await finishAgent($, id)
+          continue
+        }
+      }
       const text = await $.fs.read(log).catch(() => '')
       const got = lastLine(text)
       const line = got.line || a.line
