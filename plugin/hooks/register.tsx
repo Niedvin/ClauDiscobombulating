@@ -18,8 +18,13 @@ const UNREAD = '?'
 const PANE = 'ClauDiscobombulating'
 const PANE_COLS = 38
 const TIMER_ROWS = 7
+// big digits fit only from this width: 17 cols of time + a ≤16-col pill holding the countdown — 2026-10-31
+const BIG_TIMER_COLS = 38
 // border, padding, `⏰ ` (wide glyph), `HH`: colon at col 7 counts as hours — 2026-10-30
 const TIMER_COLON_COL = 8
+// border, padding, 7-col big `HH`, colon centred at col 10 — 2026-10-31
+const BIG_COLON_COL = 11
+const DIGIT_HOVER = '#9ad0f0'
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
@@ -118,6 +123,8 @@ const UK = {
   updateAvail: 'нова',
   updateDone: (v: string) => `Оновлено до v${v}. Перезапусти сесію.`,
   updateFailed: 'Оновлення не вдалося',
+  upToDate: (v: string) => `v${v} — остання версія`,
+  checkFailed: 'Не вдалося перевірити оновлення',
   placeholder: 'текст повідомлення',
   cancelBtn: '✕  скасувати',
   sendBtn: '✓  відправити',
@@ -157,6 +164,8 @@ const EN: typeof UK = {
   updateAvail: 'new',
   updateDone: (v: string) => `Updated to v${v}. Restart the session.`,
   updateFailed: 'Update failed',
+  upToDate: (v: string) => `v${v} is the latest`,
+  checkFailed: 'Could not check for updates',
   placeholder: 'message text',
   cancelBtn: '✕  cancel',
   sendBtn: '✓  send',
@@ -656,6 +665,19 @@ function cells(s: string) {
 }
 const fit = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - cells(s)))
 const two = (n: number) => String(n).padStart(2, '0')
+
+// 3×5 pixel digits shifted down half a row: 0.5…3.0, centred on the send pill — 2026-10-31
+const DIGIT_PX = ['111101101101111', '010110010010111', '111001111100111', '111001111001111', '101101111001001', '111100111001111', '111100111101111', '111001001001001', '111101111101111', '111101111001111']
+const halfRows = (px: string, c: number) => ['0', ...[0, 1, 2, 3, 4].map(r => px[r * 3 + c] ?? '0')]
+const bigDigits = (s: string) =>
+  [0, 1, 2].map(r =>
+    [...s]
+      .map(ch => {
+        const px = DIGIT_PX[Number(ch)] ?? DIGIT_PX[0]
+        return [0, 1, 2].map(c => ' ▀▄█'[Number(halfRows(px, c)[2 * r]) + 2 * Number(halfRows(px, c)[2 * r + 1])]).join('')
+      })
+      .join(' '),
+  )
 function hsl(h: number, s: number, l: number) {
   const a = s * Math.min(l, 1 - l)
   const f = (n: number) => {
@@ -1173,6 +1195,16 @@ async function checkVersion($: EngineInterface) {
   }
 }
 
+async function recheckVersion($: EngineInterface) {
+  try {
+    await checkVersion($)
+    const v = await read($, latest)
+    $.ui.toast(v && newerThan(v, pluginVersion) ? `✦ ${tr.updateAvail} v${v}` : tr.upToDate(pluginVersion))
+  } catch {
+    $.ui.toast(tr.checkFailed)
+  }
+}
+
 async function doUpdate($: EngineInterface) {
   try {
     const v = await read($, latest)
@@ -1345,6 +1377,7 @@ function fadeTree(node: unknown, k: number, inherit: number, text: (s: string, c
     if (isBare && typeof props.label === 'string') return { ...el, props, children: [text(props.label, scaled(own, k))] }
   }
   const out: Record<string, unknown> = { ...el, props }
+  delete out.hover
   if (el.children !== undefined) out.children = fadeTree(el.children, k, own, text)
   return out
 }
@@ -1451,7 +1484,8 @@ async function enableFull($: EngineInterface, why: string) {
 
 export const register: Register = on => {
   let metrics: Record<string, unknown> = {}
-  let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
+  let isTimerBig = false
+let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
   let paneWidth = PANE_COLS
   let treeMax = 0
   let agentsMax = 0
@@ -1779,11 +1813,11 @@ export const register: Register = on => {
       counter = (
         <Button key="ctx" plain onPress={() => toggleCount($)}>
           {runs.map((r, k) => (
-            <Text key={`d${k}`} bold={r.isHot} color={ctxColor(n, r.isHot ? 0.6 : 0)}>
+            <Text key={`d${k}`} bold={r.isHot} color={ctxColor(n, 0)}>
               {r.text}
             </Text>
           ))}
-          <Text dimColor>{` / ${kTok(ctx.window)}`}</Text>
+          <Text color={ctxColor(n, 0)}>{` / ${kTok(ctx.window)}`}</Text>
         </Button>
       )
     } else if (label) counter = <Button key="ctx" plain dimColor label={label} onPress={() => toggleCount($)} />
@@ -1869,7 +1903,7 @@ export const register: Register = on => {
     else {
       const col = e.pointer?.column ?? 0
       if ((await read($, timer).catch(() => ({ at: 0 }))).at) return next(e)
-      await nudgeDraft($, col < TIMER_COLON_COL ? 'h' : 'm', dir).catch(() => undefined)
+      await nudgeDraft($, col < (isTimerBig ? BIG_COLON_COL : TIMER_COLON_COL) ? 'h' : 'm', dir).catch(() => undefined)
     }
     return {}
   })
@@ -1884,14 +1918,19 @@ export const register: Register = on => {
     const hues = glow(name.length)
     const banner = (
       <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={hues[0]} width={width}>
-        <Button key="name" plain onPress={() => startDance($)}>
-          {name.map((ch, k) => (
-            <Text key={`n${k}`} bold color={hues[k]}>
-              {ch}
-            </Text>
-          ))}
-          <Text dimColor>{`  v${pluginVersion}`}</Text>
-        </Button>
+        <Box flexDirection="row">
+          <Button key="name" plain onPress={() => startDance($)}>
+            {name.map((ch, k) => (
+              <Text key={`n${k}`} bold color={hues[k]}>
+                {ch}
+              </Text>
+            ))}
+          </Button>
+          <Text>{'  '}</Text>
+          <Button key="version" plain onPress={() => recheckVersion($)}>
+            <Text dimColor>{`v${pluginVersion}`}</Text>
+          </Button>
+        </Box>
         {hasUpdate ? (
           <Button key="update" plain onPress={() => doUpdate($)}>
             <Text color="#f0b429">{`✦ ${tr.updateAvail} v${latestV}`}</Text>
@@ -1938,17 +1977,20 @@ export const register: Register = on => {
     const cardW = isWide ? Math.floor((width - 2) / 3) : width
     const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
     const fieldW = width - 4
+    const isBig = width >= BIG_TIMER_COLS
+    const timerRows = isBig ? TIMER_ROWS + 2 : TIMER_ROWS
     const fillW = Math.max(0, fieldW - 8 - cells(isStockText ? tr.defaultText : alarm.text || tr.placeholder))
     // read only so the countdown redraws each minute — 2026-10-11
     await read($, minute)
     const body = e.props.scroll.bodyRows
     const cardRows = isWide ? 3 : 9
-    const gap = body >= headRows + TIMER_ROWS + cardRows + 6 + 3 ? 1 : 0
+    const gap = body >= headRows + timerRows + cardRows + 6 + 3 ? 1 : 0
     const timerAt = headRows + gap
-    const modelAt = timerAt + TIMER_ROWS + gap + cardRows + gap
+    const modelAt = timerAt + timerRows + gap + cardRows + gap
     const folderAt = modelAt + 6
     const fixedRows = folderAt + 3
     paneWidth = width
+    isTimerBig = isBig
     // a child cannot paint on its own border (clipped to the inside), so titles are later siblings — 2026-10-11
     const framed = (key: string, text: string, box: unknown, foot?: unknown) => (
       <Box key={key} flexDirection="column" width={width}>
@@ -1963,38 +2005,66 @@ export const register: Register = on => {
         ) : null}
       </Box>
     )
-    // a Box border takes no press: the same glyphs drawn over it as Buttons make the whole frame one target — 2026-10-30
-    const edges = (key: string, w: number, tall: number, color: string, onPress: () => unknown, bg?: string) => [
+    // a Box border takes no press: its glyphs redrawn as Buttons, one hover scope inverting them all, make one target; hover on the inner Text is inert — 2026-10-31
+    const edges = (key: string, w: number, tall: number, color: string, onPress: () => unknown) => [
       <Box key={`${key}-et`} position="absolute" top={0} left={0}>
-        <Button key={`${key}-et`} plain onPress={onPress}>
-          <Text color={color} backgroundColor={bg}>{`╭${'─'.repeat(w - 2)}╮`}</Text>
+        <Button key={`${key}-et`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
+          <Text color={color}>{`╭${'─'.repeat(w - 2)}╮`}</Text>
         </Button>
       </Box>,
       <Box key={`${key}-eb`} position="absolute" bottom={0} left={0}>
-        <Button key={`${key}-eb`} plain onPress={onPress}>
-          <Text color={color} backgroundColor={bg}>{`╰${'─'.repeat(w - 2)}╯`}</Text>
+        <Button key={`${key}-eb`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
+          <Text color={color}>{`╰${'─'.repeat(w - 2)}╯`}</Text>
         </Button>
       </Box>,
       ...Array.from({ length: tall - 2 }, (_, r) => [
         <Box key={`${key}-el${r}`} position="absolute" top={r + 1} left={0}>
-          <Button key={`${key}-el${r}`} plain onPress={onPress}>
-            <Text color={color} backgroundColor={bg}>{'│'}</Text>
+          <Button key={`${key}-el${r}`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
+            <Text color={color}>{'│'}</Text>
           </Button>
         </Box>,
         <Box key={`${key}-er${r}`} position="absolute" top={r + 1} right={0}>
-          <Button key={`${key}-er${r}`} plain onPress={onPress}>
-            <Text color={color} backgroundColor={bg}>{'│'}</Text>
+          <Button key={`${key}-er${r}`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
+            <Text color={color}>{'│'}</Text>
           </Button>
         </Box>,
       ]).flat(),
     ]
+    // a multi-line Button inverts only its first line on hover: one Button per line, one scope — 2026-10-31
+    // inverse:false cancels the pointer's own inversion: inverted half blocks read as other glyphs — 2026-10-31
+    const bigPart = (key: string, lines: string[], color: string, onPress?: () => unknown, bg?: string, boldRow?: number, scope = key) => (
+      <Box key={key} flexDirection="column">
+        {lines.map((line, r) =>
+          bg && onPress ? (
+            <Button key={`${key}-${r}`} plain onPress={onPress} hover={{ scope, inverse: true }}>
+              <Text bold={boldRow === undefined || r === boldRow} color={color} backgroundColor={bg}>{line}</Text>
+            </Button>
+          ) : onPress ? (
+            // a Text child's own colour outranks the hover one, so the digits ride as a bare label in the default fg — 2026-10-31
+            <Button key={`${key}-${r}`} plain label={line} onPress={onPress} hover={{ scope: key, inverse: false, color: DIGIT_HOVER }} />
+          ) : (
+            <Text key={`${key}-${r}`} bold color={color} backgroundColor={bg}>{line}</Text>
+          ),
+        )}
+      </Box>
+    )
+    const digitColor = isArmed ? '#f0b429' : '#ececf1'
+    const pillKey = isArmed ? 'timer-cancel' : 'timer-arm'
+    const pillText = isArmed ? tr.cancelBtn : tr.sendBtn
+    const pillColor = isArmed ? '#9a9aab' : '#3fbf8f'
+    const pillBg = isArmed ? '#2a2a34' : '#173d30'
+    const pillPress = isArmed ? () => update($, timer, t => ({ ...t, at: 0 })) : () => armTimer($)
+    const countdown = `${tr.via} ${inFor(fireAt - Date.now())}`
+    // 2 cols each side, less only when the pane is too narrow for them — 2026-10-31
+    const pillW = Math.min(Math.max(cells(pillText), cells(countdown)) + 4, width - 4 - 17 - 2)
+    const centre = (s: string, w: number) => fit(' '.repeat(Math.max(0, Math.floor((w - cells(s)) / 2))) + s, w)
     const card = (key: string, label: string, color: string, onPress: () => unknown) => {
       const inner = cardW - 2
       const left = Math.max(0, Math.floor((inner - cells(label)) / 2))
       return (
         <Box key={`card-${key}`} flexDirection="column" width={cardW}>
           <Box width={cardW} borderStyle="round" borderColor={color} overflow="hidden">
-            <Button key={key} plain onPress={onPress}>
+            <Button key={key} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
               <Text color={color}>{fit(' '.repeat(left) + label, inner)}</Text>
             </Button>
           </Box>
@@ -2051,7 +2121,7 @@ export const register: Register = on => {
     treeMax = Math.max(0, tCount - tRows)
     agentsMax = aMax
     paneRows = {
-      timer: [timerAt + 1, timerAt + 2],
+      timer: [timerAt + 1, timerAt + (isBig ? 4 : 2)],
       model: [modelAt, modelAt + 2],
       effort: [modelAt + 3, modelAt + 5],
       tree: tRows > 0 ? [folderAt + 3, folderAt + 3 + tRows - 1] : [-1, -1],
@@ -2140,38 +2210,36 @@ export const register: Register = on => {
           'timer',
           tr.timer,
           <Box flexDirection="column" borderStyle="round" borderColor={isArmed ? '#f0b429' : '#6c6c7c'} paddingX={1} width={width}>
-            <Box flexDirection="row" justifyContent="space-between">
-              {isArmed ? (
-                <Text bold color="#f0b429">{`⏰ ${two(hh)}:${two(mm)}`}</Text>
-              ) : (
+            {isBig ? (
+              <Box flexDirection="row" justifyContent="space-between">
                 <Box flexDirection="row">
-                  <Button key="t-h" plain onPress={() => nudgeDraft($, 'h', 1)}>
-                    <Text>{'⏰ '}</Text>
-                    <Text bold color="#ececf1">{two(hh)}</Text>
-                    <Text dimColor>{':'}</Text>
-                  </Button>
-                  <Button key="t-m" plain onPress={() => nudgeDraft($, 'm', 1)}>
-                    <Text bold color="#ececf1">{two(mm)}</Text>
-                    <Text>{'   '}</Text>
-                  </Button>
+                  {bigPart('t-h', bigDigits(two(hh)), digitColor, isArmed ? undefined : () => nudgeDraft($, 'h', 1))}
+                  {bigPart('t-colon', ['   ', ' ▀ ', ' ▀ '], '#6c6c7c')}
+                  {bigPart('t-m', bigDigits(two(mm)), digitColor, isArmed ? undefined : () => nudgeDraft($, 'm', 1))}
                 </Box>
-              )}
-              <Box backgroundColor={isArmed ? '#2a2a34' : '#173d30'}>
-                {isArmed ? (
-                  <Button key="timer-cancel" plain onPress={() => update($, timer, t => ({ ...t, at: 0 }))}>
-                    <Text color="#9a9aab">{` ${tr.cancelBtn} `}</Text>
-                  </Button>
-                ) : (
-                  <Button key="timer-arm" plain onPress={() => armTimer($)}>
-                    <Text bold color="#3fbf8f">{` ${tr.sendBtn} `}</Text>
-                  </Button>
-                )}
+                <Box key={pillKey} flexDirection="column">
+                  <Text color={pillBg} hover={{ scope: pillKey, color: pillColor }}>{'▁'.repeat(pillW)}</Text>
+                  {bigPart(`${pillKey}-t`, [pillText, countdown].map(s => centre(s, pillW)), pillColor, pillPress, pillBg, 0, pillKey)}
+                  <Text color={pillBg} hover={{ scope: pillKey, color: pillColor }}>{'▔'.repeat(pillW)}</Text>
+                </Box>
               </Box>
-            </Box>
-            {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
-            <Box paddingLeft={3}>
-              <Text dimColor>{`${tr.via} ${inFor(fireAt - Date.now())}`}</Text>
-            </Box>
+            ) : (
+              <Box flexDirection="row" justifyContent="space-between">
+                <Box flexDirection="row">
+                  <Text color={digitColor}>{'⏰ '}</Text>
+                  {bigPart('t-h', [two(hh)], digitColor, isArmed ? undefined : () => nudgeDraft($, 'h', 1))}
+                  <Text color="#6c6c7c">{':'}</Text>
+                  {bigPart('t-m', [two(mm)], digitColor, isArmed ? undefined : () => nudgeDraft($, 'm', 1))}
+                </Box>
+                {bigPart(pillKey, [` ${pillText} `], pillColor, pillPress, pillBg)}
+              </Box>
+            )}
+            {/* 3 cols = "⏰ ": the countdown starts under the digits — 2026-10-30 */}
+            {isBig ? null : (
+              <Box paddingLeft={3}>
+                <Text dimColor>{countdown}</Text>
+              </Box>
+            )}
             {isArmed ? (
               <Box flexDirection="row" borderStyle="round" borderColor="#3a3a48" backgroundColor="#1c1c24" paddingX={1}>
                 <Text color="#9a9aab">{'✎ '}</Text>
@@ -2180,14 +2248,14 @@ export const register: Register = on => {
             ) : (
               <Box key="field" flexDirection="column" width={fieldW}>
                 <Box flexDirection="row" borderStyle="round" borderColor="#9a9aab" backgroundColor="#1c1c24" width={fieldW}>
-                  <Button key="timer-pen" plain onPress={() => focusText($)}>
+                  <Button key="timer-pen" plain onPress={() => focusText($)} hover={{ scope: 'field', inverse: false }}>
                     <Text color="#9a9aab">{' ✎ '}</Text>
                   </Button>
                   {/* Input has no select-all: the untouched default rides as placeholder, so the first keystroke replaces it — 2026-10-29 */}
                   <Input key="timer-text" placeholder={isStockText ? tr.defaultText : tr.placeholder} submitLabel="" value={isStockText ? '' : alarm.text} onInput={v => update($, timer, t => ({ ...t, text: v }))} onSubmit={async v => { await update($, timer, t => ({ ...t, text: v || t.text || tr.defaultText })); await armTimer($) }} />
                   {/* the Input takes a press on its text only; shrinks when the focused Input draws its own ⏎ hint — 2026-10-30 */}
                   <Box flexGrow={1} flexShrink={1} width={fillW} height={1} overflow="hidden">
-                    <Button key="timer-fill" plain onPress={() => focusText($)}>
+                    <Button key="timer-fill" plain onPress={() => focusText($)} hover={{ scope: 'field', inverse: false }}>
                       <Text>{' '.repeat(fillW)}</Text>
                     </Button>
                   </Box>
@@ -2196,7 +2264,6 @@ export const register: Register = on => {
                     <Text>{' ⏎ '}</Text>
                   </Button>
                 </Box>
-                {edges('field', fieldW, 3, '#9a9aab', () => focusText($), '#1c1c24')}
               </Box>
             )}
           </Box>,
@@ -2263,7 +2330,7 @@ export const register: Register = on => {
           <Box height={1} />
           <Button key="folder-btn" plain onPress={() => toggleFolder($)}>
             <Text color="#c9a36b">{fit(` ${folderLabel}`, width - 2)}</Text>
-            <Text dimColor>{tView > 0 ? '▴ ' : '▾ '}</Text>
+            <Text color="#c9a36b">{tView > 0 ? '▴ ' : '▾ '}</Text>
           </Button>
           <Text color="#3a3a48">{'╌'.repeat(width)}</Text>
         </Box>

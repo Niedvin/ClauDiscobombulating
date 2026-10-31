@@ -1,6 +1,6 @@
 {
   "name": "ClauDiscobombulating",
-  "version": "2.9.1",
+  "version": "2.9.2",
   "description": "Console: limits, cache timer + alert, model/effort pickers, side pane. Desktop: limits and cache timer under the prompt.",
   "author": {
     "name": "Niedvin"
