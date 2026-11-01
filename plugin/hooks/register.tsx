@@ -486,7 +486,8 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
   if (!cli || (detached && !DETACH.test(bare))) return
   const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
   const vars: Record<string, string> = {}
-  for (const m of bare.matchAll(/(?:^|[\s;&(])(\w+)=(\S*)/g)) vars[m[1]!] = unq(m[2]!)
+  // `S=dir; cmd > $S/log`: the value ends at the `;` too, or the log path is `dir;/log` — 2026-11-02
+  for (const m of bare.matchAll(/(?:^|[\s;&(])(\w+)=([^\s;&|)]*)/g)) vars[m[1]!] = unq(m[2]!)
   const mm = CLI_MODEL.exec(bare)
   const em = CLI_EFFORT.exec(bare)
   let [path, variant] = unq(mm?.[1] ?? mm?.[2] ?? mm?.[3] ?? '').replace(/^["']|["']$/g, '').split('#')
