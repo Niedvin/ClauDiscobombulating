@@ -447,12 +447,20 @@ function doneLook(frame: number) {
 }
 
 // agent CLIs run as background shells (opencode run, claude -p, …): the person counts them as subagents — 2026-10-29
-const CLI_NAMES = 'opencode|claude|codex|gemini|qwen|crush|goose|pi'
+// agy = Antigravity CLI (Gemini), `agy -p … --model gemini-…` — 2026-11-02
+// list from a scan of this PC's harnesses + known headless CLIs — 2026-11-02
+const CLI_NAMES = 'opencode|claude|codex|gemini|agy|antigravity|qwen|crush|goose|pi|aider|cursor-agent|amp|kimi|droid|copilot|kiro-cli|auggie|kilocode|cline|cn|openhands|ollama|lms|command-code|commandcode|cmdc|caveman|mods|aichat|llm'
+// `-cli`/`-ai`/`-code` tail = npx package names: `npx @google/gemini-cli -p`, `npx opencode-ai run` — 2026-11-02
+const CLI_EXT = '(?:-(?:ai|cli|code|agent))?(?:\\.exe|\\.cmd|\\.bat|\\.ps1|\\.js|\\.mjs)?'
 // a box without the CLI on PATH calls it by full path: `~/.opencode/bin/opencode run` — 2026-10-29
-const AGENT_CLI = new RegExp(`(?:^|[\\s;&|(])(?:\\S*[\\\\/])?(${CLI_NAMES})(?:\\.exe|\\.cmd|\\.bat)?\\s+(?:run|exec|-p|--print|--prompt|-m|--model)\\b`, 'i')
-const CLI_PROG = new RegExp(`^(?:.*[\\\\/])?(${CLI_NAMES})(?:\\.exe|\\.cmd|\\.bat)?$`, 'i')
-const CLI_MODEL = /\s(?:-m|--model)[\s=]+(\S+)/
-const CLI_EFFORT = /\s--(?:effort|thinking|variant|reasoning-effort)[\s=]+(\w+)/
+const AGENT_CLI = new RegExp(`(?:^|[\\s;&|(])(?:\\S*[\\\\/])?(${CLI_NAMES})${CLI_EXT}(?:\\s+(?:run|exec|e|chat|ask|task)\\b|[^;&|\\n]*?\\s(?:-p|--print|--prompt|-x|--execute|-t|--text|--task|-e|--message|--message-file|-m|--model)\\b)`, 'i')
+const CLI_PROG = new RegExp(`^(?:.*[\\\\/])?(${CLI_NAMES})${CLI_EXT}$`, 'i')
+const CLI_MODEL = /\s(?:-m|--model)[\s=]+(\S+)|\s-c\s+model=(\S+)|\b(?:ollama\s+run|lms\s+chat)\s+(?!-)(\S+)/
+const CLI_EFFORT = /\s--(?:effort|thinking|think|variant|reasoning-effort|reasoning)[\s=]+(\w+)|model_reasoning_effort=["']?(\w+)/
+// pi takes effort as a model suffix: `--model provider/id:high` — 2026-11-02
+const MODEL_EFFORT = /:(off|minimal|low|medium|high|xhigh|max)$/
+// `powershell -c "…"`, `cmd /c "…"`, `bash -lc '…'`: the quoted text is the command, not a prompt — 2026-11-02
+const SHELL_RUN = /(?:\s-(?:c|lc|Command|EncodedCommand)|\s\/[ck])\s*$/i
 const OUT_FILE = /(?:\|\s*(?:tee|Tee-Object|Out-File)\s+(?:-(?:a|Append|FilePath)\s+)*|(?:^|[^\d&>])>>?\s*)([^\s;&|)<>]+)/
 const HEREDOC = /<<-?\s*['"]?(\w+)['"]?[^\n]*\n[\s\S]*?\n\s*\1\b/g
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g
@@ -466,19 +474,25 @@ const DETACHED_IDLE_MS = 10 * 60_000
 async function trackShell($: EngineInterface, id: string, command: string, detached = false) {
   const quoted: string[] = []
   // quoted text and heredocs are prompts: a `>` or a CLI name inside them is prose — 2026-10-29
-  const bare = command.replace(HEREDOC, '').replace(QUOTED, q => {
-    const inner = q.slice(1, -1)
-    // but a quoted program path is the command itself: `& "C:\…\opencode.exe" run` — 2026-10-29
-    return CLI_PROG.test(inner) ? inner : `\u0000${quoted.push(inner) - 1}\u0000`
-  })
+  const strip = (text: string): string =>
+    text.replace(QUOTED, (q, at: number, all: string) => {
+      const inner = q.slice(1, -1)
+      if (SHELL_RUN.test(all.slice(0, at))) return ` ${strip(inner.replace(/\\(["\\])/g, '$1'))} `
+      // but a quoted program path is the command itself: `& "C:\…\opencode.exe" run` — 2026-10-29
+      return CLI_PROG.test(inner) ? inner : `\u0000${quoted.push(inner) - 1}\u0000`
+    })
+  const bare = strip(command.replace(HEREDOC, ''))
   const cli = AGENT_CLI.exec(bare)?.[1]?.toLowerCase()
   if (!cli || (detached && !DETACH.test(bare))) return
   const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
   const vars: Record<string, string> = {}
   for (const m of bare.matchAll(/(?:^|[\s;&(])(\w+)=(\S*)/g)) vars[m[1]!] = unq(m[2]!)
-  const spec = unq(CLI_MODEL.exec(bare)?.[1] ?? '')
-  const [path, variant] = spec.split('#')
-  const effort = variant || unq(CLI_EFFORT.exec(bare)?.[1] ?? '')
+  const mm = CLI_MODEL.exec(bare)
+  const em = CLI_EFFORT.exec(bare)
+  let [path, variant] = unq(mm?.[1] ?? mm?.[2] ?? mm?.[3] ?? '').replace(/^["']|["']$/g, '').split('#')
+  const tail = MODEL_EFFORT.exec(path ?? '')
+  if (tail) path = path!.slice(0, tail.index)
+  const effort = variant || tail?.[1] || unq(em?.[1] ?? em?.[2] ?? '')
   let log = unq(OUT_FILE.exec(bare)?.[1] ?? '')
   if (log) {
     const home = (await homeDir($).catch(() => undefined)) || '~'
@@ -521,12 +535,51 @@ async function shellCall($: EngineInterface, e: { agentId?: string; command?: un
   } catch {}
 }
 
+// stream-json / --json logs (claude, gemini, agy, codex, opencode): one event per line, shapes differ — 2026-11-02
+function jsonLine(s: string): { line: string; model: string } {
+  let ev: unknown
+  try {
+    ev = JSON.parse(s)
+  } catch {
+    return { line: s, model: '' }
+  }
+  let model = ''
+  let tool = ''
+  let text = ''
+  const walk = (v: unknown, depth: number, muted = false) => {
+    if (depth > 6 || !v || typeof v !== 'object') return
+    const o = v as Record<string, unknown>
+    muted ||= /^(?:user|system)$/.test(String(o.role ?? '')) || /result$/i.test(String(o.type ?? ''))
+    if (typeof o.model === 'string') model ||= o.model
+    const kind = typeof o.type === 'string' ? o.type : ''
+    // single-token deltas (`"."`) would replace the line; the next full message event carries the text — 2026-11-02
+    if (/delta/i.test(kind)) return
+    if (/tool|command|function/i.test(kind)) {
+      const name = [o.tool_name, o.toolName, o.tool, o.name, o.command].find(x => typeof x === 'string') as string | undefined
+      if (name) tool ||= name
+    }
+    for (const key of ['text', 'content', 'delta', 'result', 'message']) {
+      const x = o[key]
+      if (typeof x === 'string' && x.trim() && !text && !muted) text = x
+    }
+    for (const x of Object.values(o)) walk(x, depth + 1, muted)
+  }
+  walk(ev, 0)
+  const first = text.trim().split(/\r?\n/).find(l => l.trim()) ?? ''
+  return { line: tool ? `⚙ ${tool.split(/\s/)[0]}` : first ? `✎ ${first.trim()}` : '', model }
+}
+
 function lastLine(text: string) {
   const lines = text.slice(-8192).replace(ANSI, '').split(/\r?\n|\r/)
   let model = ''
   let line = ''
   for (let k = lines.length - 1; k >= 0 && !(line && model); k--) {
-    const s = (lines[k] ?? '').trim()
+    let s = (lines[k] ?? '').trim()
+    if (s.startsWith('{')) {
+      const got = jsonLine(s)
+      model ||= got.model
+      s = got.line
+    }
     // opencode run heads each step with `> <agent> · <model>` — 2026-10-29
     const head = /^> \S+ · (\S+)$/.exec(s)
     if (head) model ||= head[1]!
