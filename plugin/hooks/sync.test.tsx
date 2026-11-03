@@ -26,7 +26,7 @@ test('terminal pane: cards draw with saved effort', { timeoutMs: 20000 }, async 
   })
   const s = JSON.stringify(await band.drawn())
   expect(s).toContain('Opus 5.5')
-  expect(s).toContain('"low"')
+  expect(s).toContain('" low "')
   const mode = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
   expect(JSON.stringify(await mode.drawn())).toContain('━━━━━━━━━')
 })

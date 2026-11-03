@@ -7,10 +7,11 @@ export type Draft = { h: number; m: number; isSet: boolean }
 export type Context = { tokens: number; window: number; percent: number; isGuess?: boolean }
 export type Counted = { n: number; prev: number }
 export type Tree = { dir: string; dirs: string[]; drives: string[]; step: number; mode: 'closed' | 'open' | 'closing'; top: number }
+export type Prefs = { autoCompact: boolean; updateNotify: boolean; silentUpdate: boolean }
 
 declare module 'claude-code' {
   interface PluginState {
-    'ClauDiscobombulating': { limits: Limit[]; live: Live; pending: Pending; agents: Record<string, AgentLive>; flag: string; log: string[]; latest: string; paneUp: boolean; timer: Timer; draft: Draft; showResetAt: boolean; cacheLeft: number; activeAt: number; alerted: number; compactedFor: string; compactedAt: number; sinceCompact: number; context: Context; full: boolean; minute: number; countMode: boolean; counted: Counted; dance: number; reveal: number; tree: Tree; cwd: string; agentsTop: number; grow: number }
+    'ClauDiscobombulating': { limits: Limit[]; live: Live; pending: Pending; agents: Record<string, AgentLive>; flag: string; log: string[]; latest: string; paneUp: boolean; timer: Timer; draft: Draft; showResetAt: boolean; cacheLeft: number; activeAt: number; alerted: number; compactedFor: string; compactedAt: number; sinceCompact: number; context: Context; full: boolean; minute: number; countMode: boolean; counted: Counted; dance: number; reveal: number; tree: Tree; cwd: string; agentsTop: number; grow: number; settings: boolean; prefs: Prefs }
   }
 }
 

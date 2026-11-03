@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+const PANE = { title: 't', isFocused: false, bodyColumns: 38, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
+
 async function setup($: any, on: any, busy: boolean, startPct = 96) {
   const ran: string[] = []
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
@@ -128,5 +130,29 @@ test('a subagent turn does not clear isBusy: 99% still aborts the main turn', { 
   await $.session.measure(measure(99))
   await clock.advance(3000)
   expect(ran).toEqual(['abort t1', 'effort low', 'compact', 'effort high'])
+})
+
+test('autoCompact off: 99% neither aborts nor compacts', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.store(on, { autoCompact: false })
+  const ran = await setup($, on, true)
+  await $.session.measure(measure(99))
+  await clock.advance(61000)
+  expect(ran).toEqual([])
+})
+
+test('autoCompact back on from the gear: the next 99% compacts', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.store(on, { autoCompact: false })
+  const ran = await setup($, on, false)
+  await $.session.measure(measure(99))
+  await clock.advance(61000)
+  expect(ran).toEqual([])
+
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE })
+  await pane.press({ key: 'gear' })
+  await pane.press({ key: 'set-autoCompact' })
+  await clock.advance(61000)
+  expect(ran).toEqual(['effort low', 'compact', 'effort high'])
 })
 

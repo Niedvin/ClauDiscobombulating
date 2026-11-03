@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Hook, Register, RenderElement, Timer, TurnStepChunk } from 'claude-code'
 
-import type { AgentLive, Context, Counted, Draft, Limit, Live, Pending, Timer as Alarm, Tree } from '../types'
+import type { AgentLive, Context, Counted, Draft, Limit, Live, Pending, Prefs, Timer as Alarm, Tree } from '../types'
 import { DANCE_MS, REVEAL_MS, danceCells } from './dance'
 import type { Head } from './dance'
 
@@ -140,6 +140,13 @@ const UK = {
   done: 'Готово',
   sep: ' ',
   boom: 'БАХ!',
+  settings: 'Налаштування',
+  setAutoCompact: 'Авто compact 99%',
+  setUpdateNotify: 'Сповіщення про версії',
+  setSilentUpdate: 'Тихе оновлення',
+  back: '← назад',
+  on: 'увімк',
+  off: 'вимк',
 }
 const EN: typeof UK = {
   defaultText: 'continue',
@@ -181,6 +188,13 @@ const EN: typeof UK = {
   done: 'Done',
   sep: ',',
   boom: 'BOOM!',
+  settings: 'Settings',
+  setAutoCompact: 'Auto compact 99%',
+  setUpdateNotify: 'Version notifications',
+  setSilentUpdate: 'Silent update',
+  back: '← back',
+  on: 'on',
+  off: 'off',
 }
 let tr = EN
 
@@ -207,6 +221,12 @@ const latest = atom({ plugin: 'ClauDiscobombulating', key: 'latest' } as const, 
 const full = atom({ plugin: 'ClauDiscobombulating', key: 'full' } as const, false)
 const minute = atom({ plugin: 'ClauDiscobombulating', key: 'minute' } as const, 0)
 const countMode = atom({ plugin: 'ClauDiscobombulating', key: 'countMode' } as const, false)
+const settings = atom({ plugin: 'ClauDiscobombulating', key: 'settings' } as const, false)
+const prefs = atom({ plugin: 'ClauDiscobombulating', key: 'prefs' } as const, { autoCompact: true, updateNotify: true, silentUpdate: false } as Prefs)
+const PREF_DEFAULTS: Prefs = { autoCompact: true, updateNotify: true, silentUpdate: false }
+// the store outlives the /resume and /clear atom reset: this cache is the truth the draws mirror — 2026-11-03
+let prefsCache: Prefs = { ...PREF_DEFAULTS }
+let silentFor = ''
 const counted = atom({ plugin: 'ClauDiscobombulating', key: 'counted' } as const, { n: 0, prev: 0 } as Counted)
 const dance = atom({ plugin: 'ClauDiscobombulating', key: 'dance' } as const, 0)
 const reveal = atom({ plugin: 'ClauDiscobombulating', key: 'reveal' } as const, 1)
@@ -820,7 +840,8 @@ async function alertCache($: EngineInterface) {
 
 async function alertQuiet($: EngineInterface) {
   const five = (await read($, limits)).find(l => l.kind === 'five_hour')
-  return (five?.percentUsed ?? 0) >= AUTO_COMPACT_AT || (await read($, sinceCompact)) < COMPACT_QUIET_MSGS
+  // the 99% suppression rides on the auto compact running; with it off the alert is due as usual — 2026-11-03
+  return (prefsCache.autoCompact && (five?.percentUsed ?? 0) >= AUTO_COMPACT_AT) || (await read($, sinceCompact)) < COMPACT_QUIET_MSGS
 }
 
 function nextAt(h: number, m: number, now: number) {
@@ -927,7 +948,23 @@ async function compact($: EngineInterface): Promise<boolean> {
 
 const checkEveryMs = (p: number) => (p >= 95 ? 1000 : p >= 90 ? 30000 : p >= 75 ? 60000 : 300000)
 
+async function loadPrefs($: EngineInterface) {
+  const get = async (key: keyof Prefs) => {
+    const v = await $.store.get(key).catch(() => undefined)
+    return typeof v === 'boolean' ? v : PREF_DEFAULTS[key]
+  }
+  prefsCache = { autoCompact: await get('autoCompact'), updateNotify: await get('updateNotify'), silentUpdate: await get('silentUpdate') }
+  await update($, prefs, () => prefsCache)
+}
+
+async function togglePref($: EngineInterface, key: keyof Prefs) {
+  prefsCache = { ...prefsCache, [key]: !prefsCache[key] }
+  await $.store.set(key, prefsCache[key]).catch(() => undefined)
+  await update($, prefs, () => prefsCache)
+}
+
 async function autoCompact($: EngineInterface) {
+  if (!prefsCache.autoCompact) return
   const five = (await read($, limits)).find(l => l.kind === 'five_hour')
   const now = await $.clock.now()
   if (five && now - lastCheck < checkEveryMs(lastPercent)) return
@@ -1259,6 +1296,11 @@ async function checkVersion($: EngineInterface) {
   if (typeof m.version === 'string' && newerThan(m.version, pluginVersion)) {
     latestSeen = m.version
     await update($, latest, () => m.version)
+    // silent update wins over both notifications, once per found version — 2026-11-03
+    if (prefsCache.silentUpdate && silentFor !== m.version) {
+      silentFor = m.version
+      void doUpdate($, true)
+    }
   }
 }
 
@@ -1272,7 +1314,7 @@ async function recheckVersion($: EngineInterface) {
   }
 }
 
-async function doUpdate($: EngineInterface) {
+async function doUpdate($: EngineInterface, quiet = false) {
   try {
     const v = await read($, latest)
     const args = ['plugin', 'update', `${PANE}@${PANE}`, '--scope', 'user']
@@ -1281,9 +1323,9 @@ async function doUpdate($: EngineInterface) {
     await $.process.run(argv, { timeoutMs: 180000 })
     latestSeen = ''
     await update($, latest, () => '')
-    $.ui.toast(tr.updateDone(v))
+    if (!quiet) $.ui.toast(tr.updateDone(v))
   } catch (err) {
-    $.ui.toast(tr.updateFailed)
+    if (!quiet) $.ui.toast(tr.updateFailed)
     await note($, `update failed ${String(err)}`)
   }
 }
@@ -1523,11 +1565,14 @@ async function resync($: EngineInterface) {
   if (countOn !== (await read($, countMode))) await update($, countMode, () => countOn)
   if (latestSeen !== (await read($, latest))) await update($, latest, () => latestSeen)
   if (compactedKey && compactedKey !== (await read($, compactedFor))) await update($, compactedFor, () => compactedKey)
+  const p = await read($, prefs)
+  if (p.autoCompact !== prefsCache.autoCompact || p.updateNotify !== prefsCache.updateNotify || p.silentUpdate !== prefsCache.silentUpdate) await update($, prefs, () => prefsCache)
 }
 
 async function enableFull($: EngineInterface, why: string) {
   if (isFull) return
   isFull = true
+  await loadPrefs($).catch(err => note($, `prefs failed ${String(err)}`))
   await seedBindings($).catch(err => note($, `keybindings seed failed ${String(err)}`))
   await loadChord($).catch(() => undefined)
   await update($, full, () => true)
@@ -1561,6 +1606,7 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await applyLang($).catch(err => note($, `lang failed ${String(err)}`))
+    await loadPrefs($).catch(err => note($, `prefs failed ${String(err)}`))
     // subagents die with the process: anything the store kept is a ghost — 2026-10-15
     await update($, agents, () => ({})).catch(() => undefined)
     pollEvery?.cancel()
@@ -1985,7 +2031,8 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const width = Math.max(18, e.props.bodyColumns)
     const latestV = await read($, latest)
-    const hasUpdate = !!latestV && newerThan(latestV, pluginVersion)
+    const prefsNow = await read($, prefs)
+    const hasUpdate = !!latestV && newerThan(latestV, pluginVersion) && prefsNow.updateNotify && !prefsNow.silentUpdate
     const headRows = hasUpdate ? 4 : 3
     const name = [...$.plugin.name]
     const hues = glow(name.length)
@@ -2009,6 +2056,11 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
             <Text color="#f0b429">{`✦ ${tr.updateAvail} v${latestV}`}</Text>
           </Button>
         ) : null}
+        <Box position="absolute" top={0} right={0}>
+          <Button key="gear" plain onPress={() => update($, settings, v => !v)}>
+            <Text color="#9a9aab">⚙</Text>
+          </Button>
+        </Box>
       </Box>
     )
     const danceAt = await read($, dance)
@@ -2078,6 +2130,38 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
         ) : null}
       </Box>
     )
+    if (await read($, settings)) {
+      paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
+      const innerW = Math.max(1, width - 4)
+      const prefRow = (id: string, key: keyof Prefs, label: string, value: boolean) => {
+        const mark = value ? `● ${tr.on}` : `○ ${tr.off}`
+        const room = Math.max(1, innerW - cells(mark))
+        const shown = cells(label) > room ? `${label.slice(0, Math.max(1, room - 1))}…` : label
+        return (
+          <Button key={id} plain onPress={() => togglePref($, key)}>
+            <Text color={value ? '#3fbf8f' : '#6c6c7c'}>{`${fit(shown, room)}${mark}`}</Text>
+          </Button>
+        )
+      }
+      return (
+        <Box flexDirection="column" width={width} height={body} overflow="hidden" backgroundColor="black">
+          {banner}
+          {gap ? <Box height={1} /> : null}
+          {framed(
+            'settings',
+            tr.settings,
+            <Box flexDirection="column" borderStyle="round" borderColor="#6c6c7c" paddingX={1} width={width}>
+              {prefRow('set-autoCompact', 'autoCompact', tr.setAutoCompact, prefsNow.autoCompact)}
+              {prefRow('set-updateNotify', 'updateNotify', tr.setUpdateNotify, prefsNow.updateNotify)}
+              {prefRow('set-silentUpdate', 'silentUpdate', tr.setSilentUpdate, prefsNow.silentUpdate)}
+              <Button key="settings-back" plain onPress={() => update($, settings, () => false)}>
+                <Text color="#9a9aab">{fit(tr.back, innerW)}</Text>
+              </Button>
+            </Box>,
+          )}
+        </Box>
+      )
+    }
     // a Box border takes no press: its glyphs redrawn as Buttons, one hover scope inverting them all, make one target; hover on the inner Text is inert — 2026-10-31
     const edges = (key: string, w: number, tall: number, color: string, onPress: () => unknown) => [
       <Box key={`${key}-et`} position="absolute" top={0} left={0}>
