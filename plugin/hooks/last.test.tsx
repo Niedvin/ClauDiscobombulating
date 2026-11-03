@@ -48,7 +48,7 @@ test('pane: the last-session half resumes the newest transcript that is not the 
   ], toasts)
   const s = JSON.stringify(await pane.drawn())
   expect(s).toContain('≡ Sessions')
-  expect(s).toContain('↳')
+  expect(s).toContain('↶')
   expect(s).not.toContain('☰')
   expect(s).toContain('┬')
   expect(s).toContain('┴')
