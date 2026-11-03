@@ -70,6 +70,7 @@ const UK = {
   effortHint: "змінити",
   subagents: "Субагенти",
   folder: "Папка",
+  folderHome: "тут стартує сесія таймера",
   here: "сюди",
   subStart: "стартує…",
   subThink: "думає…",
@@ -96,6 +97,7 @@ const EN: typeof UK = {
   effortHint: "to change",
   subagents: "Subagents",
   folder: "Folder",
+  folderHome: "timer session starts here",
   here: "here",
   subStart: "starting…",
   subThink: "thinking…",
@@ -247,7 +249,7 @@ function setup(context: Ctx) {
   const [now, setNow] = createSignal(Date.now())
   const [usage, setUsage] = createSignal<Usage>()
   const [mem, setMem] = context.storage.memory("state", {
-    initial: { timer: { at: 0, text: "", sessionID: "" }, draft: { h: 0, m: 0, isSet: false }, latest: "" },
+    initial: { timer: { at: 0, text: "", sessionID: "" }, draft: { h: 0, m: 0, isSet: false }, latest: "", dir: "" },
   })
 
   let version = "?"
@@ -346,6 +348,30 @@ function setup(context: Ctx) {
     }
   }
 
+  // home dir pick is plugin-local: no client call moves the launch directory — 2026-11-03
+  function homeDir() {
+    try {
+      return mem.dir || data.location.default().directory
+    } catch {
+      return mem.dir || context.location?.directory || process.cwd()
+    }
+  }
+
+  async function fire(sessionID: string, text: string) {
+    if (sessionID) return send(sessionID, text)
+    try {
+      const cur = ui.model.current()
+      const info = await client.session.create({
+        location: { directory: homeDir() },
+        model: cur && { id: cur.modelID, providerID: cur.providerID, variant: cur.variant },
+      })
+      await send(info.id, text)
+      ui.router.navigate({ type: "session", sessionID: info.id })
+    } catch {
+      ui.toast.show({ message: tr().sendFailed, variant: "error" })
+    }
+  }
+
   function cycleVariant(dir: number) {
     const options: (string | undefined)[] = [undefined, ...ui.model.variant.list()]
     const i = options.indexOf(ui.model.current()?.variant)
@@ -413,7 +439,7 @@ function setup(context: Ctx) {
         s.timer = { ...s.timer, at: 0 }
         s.draft = { ...s.draft, isSet: false }
       })
-      if (timer.sessionID) void send(timer.sessionID, timer.text || tr().defaultText)
+      void fire(timer.sessionID, timer.text || tr().defaultText)
     }
     const cols = termCols
     // a terminal takes a resize only from the app's own stdout, and only the panel proves it landed — 2026-10-12
@@ -537,134 +563,132 @@ function setup(context: Ctx) {
           </Show>
         </box>
 
-        <Show when={p.sessionID}>
-          <box
-            border
-            borderStyle="rounded"
-            borderColor={armed() ? YELLOW : theme.border.base}
-            title={` ${tr().timer} `}
-            titleColor={theme.text.muted}
-            paddingX={1}
-            height={isBig() ? TIMER_ROWS + 2 : TIMER_ROWS}
-          >
-            <box flexDirection="row" justifyContent="space-between">
-              <box flexDirection="row">
-                <Show when={!isBig()}>
-                  <text fg={digitColor()}>{"⏰ "}</text>
-                </Show>
-                <box
-                  flexDirection="column"
-                  onMouseUp={() => !armed() && nudge("h", 1)}
-                  onMouseScroll={e => wheel(e, d => nudge("h", d))}
-                  onMouseOver={() => setHoverH(true)}
-                  onMouseOut={() => setHoverH(false)}
-                >
-                  <For each={isBig() ? bigDigits(two(hh())) : [two(hh())]}>
-                    {line => (
-                      <text fg={!armed() && hoverH() ? DIGIT_HOVER : digitColor()}>
-                        <b>{line}</b>
-                      </text>
-                    )}
-                  </For>
-                </box>
-                <Show
-                  when={isBig()}
-                  fallback={
-                    <text fg="#6c6c7c">{":"}</text>
-                  }
-                >
-                  <box flexDirection="column">
-                    <text fg="#6c6c7c">{"   "}</text>
-                    <text fg="#6c6c7c">{" ▀ "}</text>
-                    <text fg="#6c6c7c">{" ▀ "}</text>
-                  </box>
-                </Show>
-                <box
-                  flexDirection="column"
-                  onMouseUp={() => !armed() && nudge("m", 1)}
-                  onMouseScroll={e => wheel(e, d => nudge("m", d))}
-                  onMouseOver={() => setHoverM(true)}
-                  onMouseOut={() => setHoverM(false)}
-                >
-                  <For each={isBig() ? bigDigits(two(mm())) : [two(mm())]}>
-                    {line => (
-                      <text fg={!armed() && hoverM() ? DIGIT_HOVER : digitColor()}>
-                        <b>{line}</b>
-                      </text>
-                    )}
-                  </For>
-                </box>
+        <box
+          border
+          borderStyle="rounded"
+          borderColor={armed() ? YELLOW : theme.border.base}
+          title={` ${tr().timer} `}
+          titleColor={theme.text.muted}
+          paddingX={1}
+          height={isBig() ? TIMER_ROWS + 2 : TIMER_ROWS}
+        >
+          <box flexDirection="row" justifyContent="space-between">
+            <box flexDirection="row">
+              <Show when={!isBig()}>
+                <text fg={digitColor()}>{"⏰ "}</text>
+              </Show>
+              <box
+                flexDirection="column"
+                onMouseUp={() => !armed() && nudge("h", 1)}
+                onMouseScroll={e => wheel(e, d => nudge("h", d))}
+                onMouseOver={() => setHoverH(true)}
+                onMouseOut={() => setHoverH(false)}
+              >
+                <For each={isBig() ? bigDigits(two(hh())) : [two(hh())]}>
+                  {line => (
+                    <text fg={!armed() && hoverH() ? DIGIT_HOVER : digitColor()}>
+                      <b>{line}</b>
+                    </text>
+                  )}
+                </For>
               </box>
               <Show
                 when={isBig()}
                 fallback={
-                  <box
-                    backgroundColor={hoverPill() ? pillHoverBg() : pillBg()}
-                    paddingX={1}
-                    onMouseUp={pillPress}
-                    onMouseOver={() => setHoverPill(true)}
-                    onMouseOut={() => setHoverPill(false)}
-                  >
-                    <text fg={pillColor()}>
-                      <b>{pillText()}</b>
-                    </text>
-                  </box>
+                  <text fg="#6c6c7c">{":"}</text>
                 }
               >
+                <box flexDirection="column">
+                  <text fg="#6c6c7c">{"   "}</text>
+                  <text fg="#6c6c7c">{" ▀ "}</text>
+                  <text fg="#6c6c7c">{" ▀ "}</text>
+                </box>
+              </Show>
+              <box
+                flexDirection="column"
+                onMouseUp={() => !armed() && nudge("m", 1)}
+                onMouseScroll={e => wheel(e, d => nudge("m", d))}
+                onMouseOver={() => setHoverM(true)}
+                onMouseOut={() => setHoverM(false)}
+              >
+                <For each={isBig() ? bigDigits(two(mm())) : [two(mm())]}>
+                  {line => (
+                    <text fg={!armed() && hoverM() ? DIGIT_HOVER : digitColor()}>
+                      <b>{line}</b>
+                    </text>
+                  )}
+                </For>
+              </box>
+            </box>
+            <Show
+              when={isBig()}
+              fallback={
                 <box
-                  flexDirection="column"
-                  width={pillW()}
+                  backgroundColor={hoverPill() ? pillHoverBg() : pillBg()}
+                  paddingX={1}
                   onMouseUp={pillPress}
                   onMouseOver={() => setHoverPill(true)}
                   onMouseOut={() => setHoverPill(false)}
                 >
-                  <text fg={hoverPill() ? pillColor() : pillBg()}>{"▁".repeat(pillW())}</text>
-                  <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(pillText(), pillW())}</text>
-                  <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(countdown(), pillW())}</text>
-                  <text fg={hoverPill() ? pillColor() : pillBg()}>{"▔".repeat(pillW())}</text>
-                </box>
-              </Show>
-            </box>
-            <Show when={!isBig()}>
-              {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
-              <box paddingLeft={3}>
-                <text fg={theme.text.muted}>{countdown()}</text>
-              </box>
-            </Show>
-            <Show
-              when={armed()}
-              fallback={
-                <box
-                  border
-                  borderStyle="rounded"
-                  borderColor={theme.text.muted}
-                  backgroundColor="#1c1c24"
-                  width={fieldW()}
-                  paddingX={1}
-                  flexDirection="row"
-                  justifyContent="space-between"
-                  onMouseUp={() => void editText()}
-                >
-                  <text fg={theme.text.base}>{`✎ ${text()}`}</text>
-                  <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
-                    <text fg={GREEN}>{"⏎"}</text>
-                  </box>
+                  <text fg={pillColor()}>
+                    <b>{pillText()}</b>
+                  </text>
                 </box>
               }
             >
               <box
-                border
-                borderStyle="rounded"
-                borderColor={theme.border.base}
-                backgroundColor="#1c1c24"
-                width={fieldW()}
-                paddingX={1}
+                flexDirection="column"
+                width={pillW()}
+                onMouseUp={pillPress}
+                onMouseOver={() => setHoverPill(true)}
+                onMouseOut={() => setHoverPill(false)}
               >
-                <text fg={theme.text.muted}>{`✎ ${text()}`}</text>
+                <text fg={hoverPill() ? pillColor() : pillBg()}>{"▁".repeat(pillW())}</text>
+                <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(pillText(), pillW())}</text>
+                <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(countdown(), pillW())}</text>
+                <text fg={hoverPill() ? pillColor() : pillBg()}>{"▔".repeat(pillW())}</text>
               </box>
             </Show>
           </box>
-        </Show>
+          <Show when={!isBig()}>
+            {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
+            <box paddingLeft={3}>
+              <text fg={theme.text.muted}>{countdown()}</text>
+            </box>
+          </Show>
+          <Show
+            when={armed()}
+            fallback={
+              <box
+                border
+                borderStyle="rounded"
+                borderColor={theme.text.muted}
+                backgroundColor="#1c1c24"
+                width={fieldW()}
+                paddingX={1}
+                flexDirection="row"
+                justifyContent="space-between"
+                onMouseUp={() => void editText()}
+              >
+                <text fg={theme.text.base}>{`✎ ${text()}`}</text>
+                <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
+                  <text fg={GREEN}>{"⏎"}</text>
+                </box>
+              </box>
+            }
+          >
+            <box
+              border
+              borderStyle="rounded"
+              borderColor={theme.border.base}
+              backgroundColor="#1c1c24"
+              width={fieldW()}
+              paddingX={1}
+            >
+              <text fg={theme.text.muted}>{`✎ ${text()}`}</text>
+            </box>
+          </Show>
+        </box>
 
         <box flexDirection="row" gap={1}>
           {/* opentui counts ☰ as 2 cells: 13 fits the label, the other 2 share the rest of 37 — 2026-10-11 */}
@@ -732,9 +756,7 @@ function setup(context: Ctx) {
           </Show>
         </box>
 
-        <Show when={p.sessionID}>
-          <Folder sessionID={sid()} />
-        </Show>
+        <Folder sessionID={p.sessionID} />
 
         <Show when={agentCount() > 0}>
           <box flexGrow={1} ref={r => (spacerEl = r)} />
@@ -746,11 +768,11 @@ function setup(context: Ctx) {
   }
 
   // session.move re-roots the session; the store follows its session.moved event — 2026-10-30
-  function Folder(p: { sessionID: string }) {
+  function Folder(p: { sessionID?: string }) {
     const [open, setOpen] = createSignal(false)
     const [dir, setDir] = createSignal("")
     const [top, setTop] = createSignal(0)
-    const where = () => data.session.get(p.sessionID)?.location.directory ?? ""
+    const where = () => (p.sessionID ? data.session.get(p.sessionID)?.location.directory ?? "" : homeDir())
     const entries = createMemo(() => {
       const d = dir()
       if (!d) return [] as { name: string; path: string }[]
@@ -775,10 +797,15 @@ function setup(context: Ctx) {
     }
     const pick = (d: string) => {
       setOpen(false)
+      if (!p.sessionID) {
+        setMem(s => void (s.dir = d))
+        return
+      }
       void client.session.move({ sessionID: p.sessionID, directory: d }).catch(err => ui.toast.show({ message: String(err).slice(0, 160), variant: "error" }))
     }
     const name = () => {
-      const b = path.basename(where()) || where()
+      const at = where()
+      const b = path.basename(at) || at
       return b.length > 22 ? `${b.slice(0, 21)}…` : b
     }
     return (
@@ -810,6 +837,11 @@ function setup(context: Ctx) {
                 </box>
               )}
             </For>
+          </box>
+        </Show>
+        <Show when={!p.sessionID}>
+          <box paddingX={1}>
+            <text fg={theme.text.muted}>{`⏱ ${tr().folderHome}`}</text>
           </box>
         </Show>
       </box>
