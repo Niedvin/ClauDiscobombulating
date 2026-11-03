@@ -21,6 +21,10 @@ const USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
 const USAGE_EVERY_MS = 60000
 const KINDS: Kind[] = ["rolling", "weekly", "monthly"]
 const EFFORT_BARS = "▁▂▃▄▅▆▇█"
+const TIMER_ROWS = 7
+// big digits fit only from this width: 17 cols of time + a ≤16-col pill holding the countdown — 2026-11-03
+const BIG_TIMER_COLS = 38
+const DIGIT_HOVER = "#9ad0f0"
 const RED = "#ef5b5b"
 const YELLOW = "#f0b429"
 const GREEN = "#3fbf8f"
@@ -102,6 +106,42 @@ const EN: typeof UK = {
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
 const two = (n: number) => String(n).padStart(2, "0")
 const isRootDir = (p: string) => /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
+
+// cells as the engine lays them out: ☰ counts 2 — 2026-11-03
+function cells(s: string) {
+  let n = 0
+  for (const ch of s) {
+    const c = ch.codePointAt(0) ?? 0
+    if (c === 0xfe0f || c === 0x200d) continue
+    const isWide =
+      (c >= 0x1100 && c <= 0x115f) ||
+      (c >= 0x2630 && c <= 0x2637) ||
+      (c >= 0x23e9 && c <= 0x23f3) ||
+      (c >= 0x2e80 && c <= 0xa4cf) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe4f) ||
+      (c >= 0xff00 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6) ||
+      (c >= 0x1f300 && c <= 0x1faff)
+    n += isWide ? 2 : 1
+  }
+  return n
+}
+const fit = (s: string, w: number) => s + " ".repeat(Math.max(0, w - cells(s)))
+
+// 3×5 pixel digits shifted down half a row: 0.5…3.0, centred on the send pill — 2026-11-03
+const DIGIT_PX = ["111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001", "111100111001111", "111100111101111", "111001001001001", "111101111101111", "111101111001111"]
+const halfRows = (px: string, c: number) => ["0", ...[0, 1, 2, 3, 4].map(r => px[r * 3 + c] ?? "0")]
+const bigDigits = (s: string) =>
+  [0, 1, 2].map(r =>
+    [...s]
+      .map(ch => {
+        const px = DIGIT_PX[Number(ch)] ?? DIGIT_PX[0]!
+        return [0, 1, 2].map(c => " ▀▄█"[Number(halfRows(px, c)[2 * r]) + 2 * Number(halfRows(px, c)[2 * r + 1])]).join("")
+      })
+      .join(" "),
+  )
 
 // typed in, held, then faded to grey before the row goes — 2026-10-30
 function doneLook(t: number, word: string) {
@@ -432,13 +472,59 @@ function setup(context: Ctx) {
     const chord = createMemo(() => keymap.shortcuts("variant.cycle")[0])
     const draft = createMemo(() => shownDraft())
     const armed = () => mem.timer.at > 0
-    const text = () => {
-      const s = (mem.timer.text || tr().defaultText).split("\n")[0]!
-      return s.length > 26 ? `${s.slice(0, 25)}…` : s
-    }
     const fireAt = () => (armed() ? mem.timer.at : nextAt(draft().h, draft().m, now()))
+    const [width, setWidth] = createSignal(0)
+    const [fill, setFill] = createSignal(0)
+    const [agentCount, setAgentCount] = createSignal(0)
+    const [hoverH, setHoverH] = createSignal(false)
+    const [hoverM, setHoverM] = createSignal(false)
+    const [hoverPill, setHoverPill] = createSignal(false)
+    const dims = useTerminalDimensions()
+    let rootEl: Renderable | undefined
+    let spacerEl: Renderable | undefined
+    const timerW = () => (width() > 0 ? width() : 37)
+    const isBig = () => timerW() >= BIG_TIMER_COLS
+    const hh = () => (armed() ? new Date(mem.timer.at).getHours() : draft().h)
+    const mm = () => (armed() ? new Date(mem.timer.at).getMinutes() : draft().m)
+    const digitColor = () => (armed() ? YELLOW : theme.text.base)
+    const pillText = () => (armed() ? tr().cancelBtn : tr().sendBtn)
+    const pillColor = () => (armed() ? theme.text.muted : GREEN)
+    const pillBg = () => (armed() ? "#2a2a34" : "#173d30")
+    const pillHoverBg = () => (armed() ? "#3a3a48" : "#22543f")
+    const pillPress = () => (armed() ? setMem(s => void (s.timer = { ...s.timer, at: 0 })) : arm(sid()))
+    const countdown = () => `${tr().via} ${resetIn(new Date(fireAt()).toISOString(), now())}`
+    const fieldW = () => Math.max(1, timerW() - 4)
+    // left leaves room for "✎ " and the field's border+padding, right for "  ⏎" — 2026-11-03
+    const text = () => {
+      const max = Math.max(4, fieldW() - 10)
+      const s = (mem.timer.text || tr().defaultText).split("\n")[0]!
+      return cells(s) > max ? `${s.slice(0, max - 1)}…` : s
+    }
+    // 2 cols each side, less only when the pane is too narrow for them — 2026-11-03
+    const pillW = () => Math.max(1, Math.min(Math.max(cells(pillText()), cells(countdown())) + 4, timerW() - 4 - 17 - 2))
+    const centre = (s: string, w: number) => fit(" ".repeat(Math.max(0, Math.floor((w - cells(s)) / 2))) + s, w)
+    // the sidebar slot is scrollbox content: the root needs a height before a flex spacer can grow — 2026-11-03
+    function measure() {
+      const el = rootEl
+      if (!el) return
+      setWidth(el.width)
+      if (agentCount() === 0) return setFill(0)
+      let parent: Renderable | null = el.parent
+      while (parent && !("scrollHeight" in parent)) parent = parent.parent
+      if (!parent) return setFill(0)
+      const pane = parent as Renderable & { screenY: number; height: number; scrollTop?: number }
+      const natural = el.height - (spacerEl?.height ?? 0)
+      // scroll offset cancels out: pin to the content bottom, not the visibly scrolled one — 2026-11-03
+      const top = el.screenY - pane.screenY + (pane.scrollTop ?? 0)
+      setFill(Math.max(0, pane.height - top - natural))
+    }
+    createEffect(() => {
+      agentCount()
+      dims().height
+      measure()
+    })
     return (
-      <box gap={1}>
+      <box ref={r => (rootEl = r)} onSizeChange={measure} minHeight={fill() || undefined} gap={1}>
         <box border borderStyle="rounded" borderColor={hues[0]} alignItems="center">
           <text>
             <b>
@@ -452,64 +538,131 @@ function setup(context: Ctx) {
         </box>
 
         <Show when={p.sessionID}>
-          <box border borderStyle="rounded" borderColor={armed() ? YELLOW : theme.border.base} title={` ${tr().timer} `} titleColor={theme.text.muted} paddingX={1}>
+          <box
+            border
+            borderStyle="rounded"
+            borderColor={armed() ? YELLOW : theme.border.base}
+            title={` ${tr().timer} `}
+            titleColor={theme.text.muted}
+            paddingX={1}
+            height={isBig() ? TIMER_ROWS + 2 : TIMER_ROWS}
+          >
             <box flexDirection="row" justifyContent="space-between">
               <box flexDirection="row">
+                <Show when={!isBig()}>
+                  <text fg={digitColor()}>{"⏰ "}</text>
+                </Show>
+                <box
+                  flexDirection="column"
+                  onMouseUp={() => !armed() && nudge("h", 1)}
+                  onMouseScroll={e => wheel(e, d => nudge("h", d))}
+                  onMouseOver={() => setHoverH(true)}
+                  onMouseOut={() => setHoverH(false)}
+                >
+                  <For each={isBig() ? bigDigits(two(hh())) : [two(hh())]}>
+                    {line => (
+                      <text fg={!armed() && hoverH() ? DIGIT_HOVER : digitColor()}>
+                        <b>{line}</b>
+                      </text>
+                    )}
+                  </For>
+                </box>
                 <Show
-                  when={armed()}
+                  when={isBig()}
                   fallback={
-                    <>
-                      <box flexDirection="row" onMouseUp={() => nudge("h", 1)} onMouseScroll={e => wheel(e, d => nudge("h", d))}>
-                        <text fg={theme.text.base}>{"⏰ "}</text>
-                        <text fg={theme.text.base}>
-                          <b>{two(draft().h)}</b>
-                        </text>
-                        <text fg={theme.text.muted}>{":"}</text>
-                      </box>
-                      <box paddingRight={3} onMouseUp={() => nudge("m", 1)} onMouseScroll={e => wheel(e, d => nudge("m", d))}>
-                        <text fg={theme.text.base}>
-                          <b>{two(draft().m)}</b>
-                        </text>
-                      </box>
-                    </>
+                    <text fg="#6c6c7c">{":"}</text>
                   }
                 >
-                  <text fg={YELLOW}>
-                    <b>{`⏰ ${two(new Date(mem.timer.at).getHours())}:${two(new Date(mem.timer.at).getMinutes())}`}</b>
-                  </text>
+                  <box flexDirection="column">
+                    <text fg="#6c6c7c">{"   "}</text>
+                    <text fg="#6c6c7c">{" ▀ "}</text>
+                    <text fg="#6c6c7c">{" ▀ "}</text>
+                  </box>
                 </Show>
+                <box
+                  flexDirection="column"
+                  onMouseUp={() => !armed() && nudge("m", 1)}
+                  onMouseScroll={e => wheel(e, d => nudge("m", d))}
+                  onMouseOver={() => setHoverM(true)}
+                  onMouseOut={() => setHoverM(false)}
+                >
+                  <For each={isBig() ? bigDigits(two(mm())) : [two(mm())]}>
+                    {line => (
+                      <text fg={!armed() && hoverM() ? DIGIT_HOVER : digitColor()}>
+                        <b>{line}</b>
+                      </text>
+                    )}
+                  </For>
+                </box>
               </box>
-              <box
-                backgroundColor={armed() ? "#2a2a34" : "#173d30"}
-                paddingX={1}
-                onMouseUp={() => (armed() ? setMem(s => void (s.timer = { ...s.timer, at: 0 })) : arm(sid()))}
+              <Show
+                when={isBig()}
+                fallback={
+                  <box
+                    backgroundColor={hoverPill() ? pillHoverBg() : pillBg()}
+                    paddingX={1}
+                    onMouseUp={pillPress}
+                    onMouseOver={() => setHoverPill(true)}
+                    onMouseOut={() => setHoverPill(false)}
+                  >
+                    <text fg={pillColor()}>
+                      <b>{pillText()}</b>
+                    </text>
+                  </box>
+                }
               >
-                <text fg={armed() ? theme.text.muted : GREEN}>
-                  <b>{armed() ? tr().cancelBtn : tr().sendBtn}</b>
-                </text>
-              </box>
-            </box>
-            {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
-            <box paddingLeft={3}>
-              <text fg={theme.text.muted}>{`${tr().via} ${resetIn(new Date(fireAt()).toISOString(), now())}`}</text>
-            </box>
-            <box
-              border
-              borderStyle="rounded"
-              borderColor={armed() ? theme.border.base : theme.text.muted}
-              backgroundColor="#1c1c24"
-              paddingX={1}
-              flexDirection="row"
-              justifyContent="space-between"
-              onMouseUp={() => !armed() && void editText()}
-            >
-              <text fg={armed() ? theme.text.muted : theme.text.base}>{`✎ ${text()}`}</text>
-              <Show when={!armed()}>
-                <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
-                  <text fg={GREEN}>{"⏎"}</text>
+                <box
+                  flexDirection="column"
+                  width={pillW()}
+                  onMouseUp={pillPress}
+                  onMouseOver={() => setHoverPill(true)}
+                  onMouseOut={() => setHoverPill(false)}
+                >
+                  <text fg={hoverPill() ? pillColor() : pillBg()}>{"▁".repeat(pillW())}</text>
+                  <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(pillText(), pillW())}</text>
+                  <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(countdown(), pillW())}</text>
+                  <text fg={hoverPill() ? pillColor() : pillBg()}>{"▔".repeat(pillW())}</text>
                 </box>
               </Show>
             </box>
+            <Show when={!isBig()}>
+              {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
+              <box paddingLeft={3}>
+                <text fg={theme.text.muted}>{countdown()}</text>
+              </box>
+            </Show>
+            <Show
+              when={armed()}
+              fallback={
+                <box
+                  border
+                  borderStyle="rounded"
+                  borderColor={theme.text.muted}
+                  backgroundColor="#1c1c24"
+                  width={fieldW()}
+                  paddingX={1}
+                  flexDirection="row"
+                  justifyContent="space-between"
+                  onMouseUp={() => void editText()}
+                >
+                  <text fg={theme.text.base}>{`✎ ${text()}`}</text>
+                  <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
+                    <text fg={GREEN}>{"⏎"}</text>
+                  </box>
+                </box>
+              }
+            >
+              <box
+                border
+                borderStyle="rounded"
+                borderColor={theme.border.base}
+                backgroundColor="#1c1c24"
+                width={fieldW()}
+                paddingX={1}
+              >
+                <text fg={theme.text.muted}>{`✎ ${text()}`}</text>
+              </box>
+            </Show>
           </box>
         </Show>
 
@@ -583,7 +736,11 @@ function setup(context: Ctx) {
           <Folder sessionID={sid()} />
         </Show>
 
-        <Show when={p.sessionID}>{sid => <Subagents sessionID={sid()} />}</Show>
+        <Show when={agentCount() > 0}>
+          <box flexGrow={1} ref={r => (spacerEl = r)} />
+        </Show>
+
+        <Show when={p.sessionID}>{sid => <Subagents sessionID={sid()} onCount={setAgentCount} />}</Show>
       </box>
     )
   }
@@ -660,7 +817,7 @@ function setup(context: Ctx) {
   }
 
   // box under Effort: live subagents of this session tree — model, effort, current step — 2026-10-15
-  function Subagents(p: { sessionID: string }) {
+  function Subagents(p: { sessionID: string; onCount: (n: number) => void }) {
     const tried = new Map<string, number>()
     const running = createMemo(() =>
       data.session
@@ -699,6 +856,8 @@ function setup(context: Ctx) {
     }, DONE_FRAME_MS)
     onCleanup(() => clearInterval(ticker))
     const rows = createMemo(() => [...running().map(s => ({ s, at: 0 })), ...finished()].toSorted((a, b) => a.s.time.created - b.s.time.created))
+    createEffect(() => p.onCount(rows().length))
+    onCleanup(() => p.onCount(0))
     const modelOf = (id: string) => {
       const last = data.session.message.list(id).findLast(m => m.type === "assistant")
       const ref = (last?.type === "assistant" ? last.model : undefined) ?? data.session.get(id)?.model

@@ -289,6 +289,16 @@ async function patchAgent($: EngineInterface, id: string, patch: Partial<AgentLi
   await update($, agents, a => (a[id] && !a[id].done ? { ...a, [id]: { ...a[id], ...patch } } : a))
 }
 
+// a stopped shell sends no task-notification, so its row goes on the stop itself — 2026-11-02
+async function dropAgent($: EngineInterface, id: string) {
+  await update($, agents, a => {
+    if (!a[id]) return a
+    const rest = { ...a }
+    delete rest[id]
+    return rest
+  })
+}
+
 const isRootDir = (p: string) => /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
 const joinDir = (dir: string, name: string) => (/[\\/]$/.test(dir) ? `${dir}${name}` : `${dir}/${name}`)
 
@@ -482,7 +492,8 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
       return CLI_PROG.test(inner) ? inner : `\u0000${quoted.push(inner) - 1}\u0000`
     })
   const bare = strip(command.replace(HEREDOC, ''))
-  const cli = AGENT_CLI.exec(bare)?.[1]?.toLowerCase()
+  const hit = AGENT_CLI.exec(bare)
+  const cli = hit?.[1]?.toLowerCase()
   if (!cli || (detached && !DETACH.test(bare))) return
   const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
   const vars: Record<string, string> = {}
@@ -494,7 +505,8 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
   const tail = MODEL_EFFORT.exec(path ?? '')
   if (tail) path = path!.slice(0, tail.index)
   const effort = variant || tail?.[1] || unq(em?.[1] ?? em?.[2] ?? '')
-  let log = unq(OUT_FILE.exec(bare)?.[1] ?? '')
+  // only the redirect after the CLI is its log: `git status > pre.txt && opencode … > run.log` — 2026-11-02
+  let log = unq(OUT_FILE.exec(bare.slice(hit!.index))?.[1] ?? '')
   if (log) {
     const home = (await homeDir($).catch(() => undefined)) || '~'
     const env: Record<string, string | undefined> = {
@@ -511,7 +523,8 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
       log = log.replace(new RegExp(`\\$\\{?${n}\\}?(?!\\w)`, 'g'), v)
     }
     log = log.replace(/^~(?=[\\/])/, home).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)
-    const cd = /(?:^|[;&]\s*)cd\s+(\S+)/.exec(bare)?.[1]
+    // the path ends at the `;` too: `cd "/e/Moto G72/…"; opencode …` kept it as `…obdass;/generated/…` — 2026-11-02
+    const cd = /(?:^|[;&]\s*)cd\s+([^\s;&|)]+)/.exec(bare)?.[1]
     if (!/^([a-zA-Z]:)?[\\/]/.test(log) && cd) log = `${unq(cd).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)}/${log}`
   }
   if (detached && !log) return
@@ -614,7 +627,7 @@ async function taskOutput($: EngineInterface, id: string) {
 let tailAt = 0
 let tailing = false
 async function tailShells($: EngineInterface) {
-  const now = Date.now()
+  const now = await $.clock.now()
   if (tailing || now - tailAt < TAIL_MS) return
   tailAt = now
   tailing = true
@@ -1769,11 +1782,17 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     await shellCall($, e, r)
     return r
   })
+  on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
+    const r = await next(e)
+    const id = (e as { task_id?: unknown }).task_id
+    if (typeof id === 'string') await dropAgent($, id).catch(() => undefined)
+    return r
+  })
 
   on('prompt.submit', async ($, e, next) => {
     if (e.origin?.kind === 'task-notification') {
-      const id = /<task-id>([^<]+)<\/task-id>/.exec(e.text)?.[1]?.trim()
-      if (id) await finishAgent($, id).catch(() => undefined)
+      // an orphan summary lists several stopped ids, the notification's own first — 2026-11-02
+      for (const m of e.text.matchAll(/<task-id>([^<]+)<\/task-id>/g)) await finishAgent($, m[1]!.trim()).catch(() => undefined)
     }
     return next(e)
   })

@@ -126,3 +126,75 @@ test('pane: an agent CLI reached by path or quoted path still gets a row', { tim
   expect(await text()).toContain('opencode · kimi-k2')
   expect(await text()).toContain('"max"')
 })
+
+test('pane: the row tails the redirect after the CLI, under a quoted cd', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const norm = (p: string) => p.replace(/\\/g, '/')
+  const logs: Record<string, string> = {
+    // `cd "…"; S=…; opencode … > gen/log`: the `;` must not join the cd path — 2026-11-02
+    'E:/Moto G72/tools/obdass/generated/reports/bugs.log': '> build · deepseek-v4.1-flash\n$ git status\nwin-dev\n',
+    // `git status > pre.txt && opencode … > run.log`: the first redirect is not the agent's — 2026-11-02
+    'E:/Niedvin Keyboard/generated/reports/run.log': '$ ls build\nperf-line\n',
+  }
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('session.id', () => ({ value: 's1' }))
+  on('fs.read', (_$: any, e: any, next: any) => (norm(e.path) in logs ? { value: logs[norm(e.path)] } : next(e)))
+  on('tool.call', () => ({ result: { backgroundTaskId: 'bg1' } }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE_PROPS })
+  const text = async () => JSON.stringify(await pane.drawn())
+
+  await toolCall($, {
+    tool: 'Bash',
+    command:
+      'cd "/e/Moto G72/tools/obdass"; S="/c/x"; opencode run -m "opencode-go/deepseek-v4.1-flash#max" "$(cat "$S/bugs.txt")" > generated/reports/bugs.log 2>&1',
+  })
+  await clock.advance(4000)
+  await new Promise(r => setTimeout(r, 50))
+  expect(await text()).toContain('win-dev')
+
+  await toolCall($, {
+    tool: 'Bash',
+    command:
+      'cd "/e/Niedvin Keyboard" && git status --porcelain > generated/reports/pre.txt && opencode run -m "opencode-go/deepseek-v4.1-flash#max" --auto "spec" </dev/null > generated/reports/run.log 2>&1',
+  })
+  await clock.advance(4000)
+  await new Promise(r => setTimeout(r, 50))
+  expect(await text()).toContain('perf-line')
+})
+
+test('pane: TaskStop drops the shell row at once, with no task-notification', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('tool.call', () => ({ result: { backgroundTaskId: 'bg1' } }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE_PROPS })
+  const text = async () => JSON.stringify(await pane.drawn())
+
+  await toolCall($, { tool: 'Bash', command: 'opencode run -m "opencode-go/deepseek-v4.1-flash#max" --auto "audit"' })
+  await clock.advance(400)
+  expect(await text()).toContain('opencode · deepseek-v4.1-flash')
+
+  await toolCall($, { tool: 'TaskStop', task_id: 'bg1' })
+  await clock.advance(100)
+  expect(await text()).not.toContain('opencode · deepseek-v4.1-flash')
+  expect(await text()).not.toContain('Субагенти')
+})
