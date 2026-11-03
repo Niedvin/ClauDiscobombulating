@@ -22,8 +22,8 @@ const USAGE_EVERY_MS = 60000
 const KINDS: Kind[] = ["rolling", "weekly", "monthly"]
 const EFFORT_BARS = "▁▂▃▄▅▆▇█"
 const TIMER_ROWS = 7
-// big digits fit only from this width: 17 cols of time + a ≤16-col pill holding the countdown — 2026-11-03
-const BIG_TIMER_COLS = 38
+// big digits: 17 cols of time + ≤16-col pill; 36 not 38 ∵ opencode sidebar content is 37 wide — 2026-11-03
+const BIG_TIMER_COLS = 36
 const DIGIT_HOVER = "#9ad0f0"
 const RED = "#ef5b5b"
 const YELLOW = "#f0b429"
