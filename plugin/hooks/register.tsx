@@ -4,6 +4,7 @@ import type { EngineInterface, Hook, Register, RenderElement, Timer, TurnStepChu
 import type { AgentLive, Context, Counted, Draft, Limit, Live, Pending, Prefs, Timer as Alarm, Tree } from '../types'
 import { DANCE_MS, REVEAL_MS, danceCells } from './dance'
 import type { Head } from './dance'
+import { isShell, newWindow, relaunchArgv, relaunchScript, shq, splitWin } from './restart'
 
 // aliases: the engine resolves each to the newest model of the family — 2026-10-02
 const MODELS = [
@@ -116,12 +117,15 @@ const UK = {
   compactFailed: 'Compact не вдався',
   autoCompact: (p: number) => `Ліміт 5г ${p}%: стоп і compact`,
   resumeFailed: 'Не вдалося відкрити /resume',
+  lastSession: '↳',
+  noLastSession: 'Немає попередньої сесії',
   resumeAsk: 'Cache miss: контекст кешується заново і це коштує. Все одно продовжити?',
   toPane: 'колесо ⇥',
   paneOpen: 'Панель відкрита.',
   paneWaits: 'Панель чекає на ширший термінал.',
   updateAvail: 'нова',
   updateDone: (v: string) => `Оновлено до v${v}. Перезапусти сесію.`,
+  updateHint: (v: string) => `✦ v${v} — натисніть, щоб оновити`,
   updateFailed: 'Оновлення не вдалося',
   upToDate: (v: string) => `v${v} — остання версія`,
   checkFailed: 'Не вдалося перевірити оновлення',
@@ -164,12 +168,15 @@ const EN: typeof UK = {
   compactFailed: 'Compact failed',
   autoCompact: p => `5h limit ${p}%: stopping to compact`,
   resumeFailed: 'Could not open /resume',
+  lastSession: '↳',
+  noLastSession: 'No previous session',
   resumeAsk: 'Cache miss: the context is cached again, which costs tokens. Continue anyway?',
   toPane: 'wheel ⇥',
   paneOpen: 'Pane opened.',
   paneWaits: 'Pane waits for a wider terminal.',
   updateAvail: 'new',
   updateDone: (v: string) => `Updated to v${v}. Restart the session.`,
+  updateHint: (v: string) => `✦ v${v} — click to update`,
   updateFailed: 'Update failed',
   upToDate: (v: string) => `v${v} is the latest`,
   checkFailed: 'Could not check for updates',
@@ -729,7 +736,7 @@ async function savedEffort($: EngineInterface, model: string) {
   return isLevel(st.effortLevel) ? st.effortLevel : ''
 }
 
-// cells as the engine lays them out: ☰ counts 2 (its card row came out 1 short in pyte) — 2026-10-30
+// cells mirror the engine's widths, not an older terminal's table: U+2630–U+2637 count 2 here — 2026-11-03
 function cells(s: string) {
   let n = 0
   for (const ch of s) {
@@ -1001,6 +1008,26 @@ async function sessions($: EngineInterface) {
   }
 }
 
+async function lastSession($: EngineInterface) {
+  try {
+    const here = (await $.session.cwd()) || '/'
+    const dir = `${await configDir($)}/projects/${here.replace(/[^A-Za-z0-9]/g, '-')}`
+    const current = `${await $.session.id()}.jsonl`
+    const files = await $.fs.list(dir).catch(() => [])
+    const newest = files
+      .filter(f => f.kind === 'file' && f.name.endsWith('.jsonl') && f.name !== current && f.size >= 2048)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
+    if (!newest) {
+      $.ui.toast(tr.noLastSession)
+      return
+    }
+    await $.command.run({ command: 'resume', args: newest.name.slice(0, -'.jsonl'.length) })
+  } catch (err) {
+    $.ui.toast(tr.resumeFailed)
+    await note($, `last session failed ${String(err)}`)
+  }
+}
+
 async function resume($: EngineInterface, surface: string) {
   const text = surface === 'terminal' ? RESUME_TERMINAL : RESUME_OTHER
   if ((await isCostlyMiss($)) && !(await alertQuiet($))) {
@@ -1119,6 +1146,7 @@ let sharedAt = 0
 let lastActive = 0
 let isBusy = false
 let isCompacting = false
+let permMode = ''
 let lastCheck = 0
 let lastPercent = 0
 let turnId = ''
@@ -1323,10 +1351,92 @@ async function doUpdate($: EngineInterface, quiet = false) {
     await $.process.run(argv, { timeoutMs: 180000 })
     latestSeen = ''
     await update($, latest, () => '')
-    if (!quiet) $.ui.toast(tr.updateDone(v))
+    if (quiet) return
+    if (await relaunch($).catch(err => note($, `relaunch failed ${String(err)}`).then(() => false))) return
+    $.ui.toast(tr.updateDone(v))
   } catch (err) {
     if (!quiet) $.ui.toast(tr.updateFailed)
     await note($, `update failed ${String(err)}`)
+  }
+}
+
+const lines = (t: string) => t.split('\n').map(l => l.trim()).filter(Boolean)
+
+// a running turn or a live subagent would die with the process — 2026-11-03
+async function canRelaunch($: EngineInterface) {
+  return !isBusy && !isCompacting && Object.keys(await read($, agents)).length === 0
+}
+
+// the old window dies with its process (VTE closes the pty), so the session reopens in a new one — 2026-11-03
+async function relaunch($: EngineInterface): Promise<boolean> {
+  if (!(await canRelaunch($))) return false
+  const cwd = await $.session.root()
+  const id = (await $.session.turns()) > 0 ? await $.session.id() : ''
+  const helper = (await $.env.get('OS').catch(() => undefined)) === 'Windows_NT' ? await winHelper($, cwd, id) : await posixHelper($, cwd, id)
+  if (!helper) return false
+  await note($, `relaunch session=${id || 'none'} cwd=${cwd}`)
+  await helper()
+  return true
+}
+
+async function posixHelper($: EngineInterface, cwd: string, id: string) {
+  const sh = async (script: string) => (await $.process.run(['sh', '-c', script])).stdout
+  const pid = Number((await sh('echo $PPID')).trim())
+  if (!pid) return undefined
+  const hasProc = (await sh(`[ -r /proc/${pid}/cmdline ] && echo y`)).trim() === 'y'
+  let argv = hasProc ? lines(await sh(`tr '\\0' '\\n' < /proc/${pid}/cmdline`)) : (await sh(`ps -ww -o args= -p ${pid}`)).trim().split(/\s+/)
+  if (!argv.length) return undefined
+  // a node/bun install runs as `node cli.js …`: the script is part of the command — 2026-11-03
+  const isRuntime = /(^|\/)(node|bun|deno)(\.exe)?$/.test(argv[0]!)
+  const head = isRuntime ? argv.slice(0, 2) : argv.slice(0, 1)
+  const cmd = [...head.slice(0, -1), ...relaunchArgv([head.at(-1)!, ...argv.slice(head.length)], id, permMode)]
+  const ppid = Number((await sh(`ps -o ppid= -p ${pid}`)).trim())
+  const parent = lines(await sh(`ps -o args= -p ${ppid}`))[0]?.split(/\s+/)[0] ?? ''
+  const isInShell = isShell(parent)
+  const termPid = isInShell ? Number((await sh(`ps -o ppid= -p ${ppid}`)).trim()) : ppid
+  const term = lines(await sh(`ps -o args= -p ${termPid}`))[0]?.split(/\s+/)[0] ?? ''
+  const macTerm = (await $.env.get('TERM_PROGRAM').catch(() => undefined)) === 'Apple_Terminal'
+  if (await $.env.get('TMUX').catch(() => undefined)) return undefined
+  const run = cmd.map(shq).join(' ')
+  let open: string
+  if (macTerm) {
+    const as = `tell application "Terminal" to do script "cd ${cwd.replace(/["\\]/g, '\\$&')} && ${run.replace(/["\\]/g, '\\$&')}"`
+    open = `osascript -e ${shq(as)} -e 'tell application "Terminal" to activate'`
+  } else {
+    const win = newWindow(term, cwd, cmd, isInShell)
+    if (!win) return undefined
+    open = win.map(shq).join(' ')
+  }
+  const wid = (await $.env.get('WINDOWID').catch(() => undefined)) ?? ''
+  const tmp = `${(await $.env.get('TMPDIR').catch(() => undefined)) || '/tmp'}/claudisco-env-${pid}`
+  const script = relaunchScript(pid, hasProc, tmp, open, wid)
+  return async () => {
+    await $.process.run(['setsid', '-f', 'sh', '-c', script], { timeoutMs: 10000 })
+  }
+}
+
+async function winHelper($: EngineInterface, cwd: string, id: string) {
+  const ps = async (script: string) => (await $.process.run(['powershell.exe', '-NoProfile', '-Command', script])).stdout.trim()
+  const pid = Number(await ps('(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId'))
+  if (!pid) return undefined
+  const line = await ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`)
+  const argv = splitWin(line)
+  if (!argv.length) return undefined
+  const isRuntime = /(^|[\\/])(node|bun)(\.exe)?$/i.test(argv[0]!)
+  const head = isRuntime ? argv.slice(0, 2) : argv.slice(0, 1)
+  const cmd = [...head.slice(0, -1), ...relaunchArgv([head.at(-1)!, ...argv.slice(head.length)], id, permMode)]
+  const q = (a: string) => `'${a.replace(/'/g, "''")}'`
+  const wt = !!(await $.env.get('WT_SESSION').catch(() => undefined))
+  const list = (wt ? ['-w', '0', 'nt', '-d', cwd, ...cmd] : cmd.slice(1)).map(a => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a))
+  const start = wt
+    ? `Start-Process wt.exe -ArgumentList ${list.map(q).join(',')}`
+    : `Start-Process ${q(cmd[0]!)} -WorkingDirectory ${q(cwd)}${list.length ? ` -ArgumentList ${list.map(q).join(',')}` : ''}`
+  const script = `Start-Sleep -Milliseconds 500; Stop-Process -Id ${pid} -ErrorAction SilentlyContinue; Wait-Process -Id ${pid} -Timeout 10 -ErrorAction SilentlyContinue; Stop-Process -Id ${pid} -ErrorAction SilentlyContinue; Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; ${start}`
+  const dir = (await $.env.get('TEMP').catch(() => undefined)) || cwd
+  const file = `${dir}\\claudisco-relaunch-${pid}.ps1`
+  await $.fs.write(file, script)
+  return async () => {
+    await ps(`Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',${q(file)}`)
   }
 }
 
@@ -1651,7 +1761,13 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     return r
   })
 
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (e.permission_mode) permMode = e.permission_mode
+    return next(e)
+  })
+
   on('classic.SessionStart', async ($, e, next) => {
+    if (e.permission_mode) permMode = e.permission_mode
     if (e.source !== 'compact') isCompacted = false
     const secs = e.seconds_since_last_response
     if (typeof secs === 'number') {
@@ -2052,13 +2168,14 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
           </Button>
         </Box>
         {hasUpdate ? (
-          <Button key="update" plain onPress={() => doUpdate($)}>
-            <Text color="#f0b429">{`✦ ${tr.updateAvail} v${latestV}`}</Text>
+          <Button key="update" plain onPress={() => void doUpdate($)}>
+            <Text color="#f0b429">{fit(tr.updateHint(latestV), Math.max(1, width - 2))}</Text>
           </Button>
         ) : null}
+        {/* ⚙ is 1 cell to the engine, but terminals draw its emoji glyph 2 wide: the trailing blank takes the overflow — 2026-11-03 */}
         <Box position="absolute" top={0} right={0}>
-          <Button key="gear" plain onPress={() => update($, settings, v => !v)}>
-            <Text color="#9a9aab">⚙</Text>
+          <Button key="gear" plain onPress={() => update($, settings, v => !v)} hover={{ scope: 'gear', inverse: true }}>
+            <Text color="#c8c8d4" backgroundColor="#2a2a34">{' ⚙  '}</Text>
           </Button>
         </Box>
       </Box>
@@ -2071,7 +2188,7 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
       // no taller than the visible body: a taller tree scrolls a row mid-dance and strands a blitted row — 2026-10-11
       const rows = headRows + Math.max(STAGE_MIN_ROWS, Math.min(e.props.scroll.bodyRows - headRows - 1, e.props.placement === 'dock' ? 60 : 20))
       const toRgb = (h: string | undefined) => parseInt((h ?? '#cccccc').slice(1), 16)
-      const head: Head = { name: name.join(''), colors: hues.map(toRgb), tail: `  v${pluginVersion}`, update: hasUpdate ? `✦ ${tr.updateAvail} v${latestV}` : '', border: toRgb(hues[0]) }
+      const head: Head = { name: name.join(''), colors: hues.map(toRgb), tail: `  v${pluginVersion}`, update: hasUpdate ? tr.updateHint(latestV).slice(0, Math.max(1, width - 2)) : '', border: toRgb(hues[0]) }
       stage = { columns: width, rows, head }
       paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
       const cells = danceCells(width, rows, Math.max(0, danceMs) / 1000, tr.boom, head)
@@ -2098,8 +2215,18 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     const at = isArmed ? new Date(alarm.at) : undefined
     const hh = at ? at.getHours() : d.h
     const mm = at ? at.getMinutes() : d.m
-    const isWide = width >= PANE_COLS
-    const cardW = isWide ? Math.floor((width - 2) / 3) : width
+    const S_LABEL = '≡ Sessions'
+    const C_LABEL = '⇊ Compact'
+    const R_LABEL = '⟲ Resume'
+    const groupMin = cells(S_LABEL) + 2 + 3
+    const isWide = width >= PANE_COLS && groupMin + cells(C_LABEL) + cells(R_LABEL) + 4 <= width - 2
+    const third = Math.floor((width - 2) / 3)
+    const groupW = isWide ? Math.max(groupMin, width - 2 - 2 * third) : width
+    const compactW = isWide ? Math.ceil((width - 2 - groupW) / 2) : width
+    const resumeW = isWide ? width - 2 - groupW - compactW : width
+    // ↳ gets a quarter of the joined card, 2..5 cells, never squeezing the Sessions label — 2026-11-03
+    const lastIn = Math.max(2, Math.min(5, Math.floor((groupW - 3) / 4), groupW - 3 - cells(S_LABEL)))
+    const sessIn = groupW - 3 - lastIn
     const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
     const fieldW = width - 4
     const isBig = width >= BIG_TIMER_COLS
@@ -2132,17 +2259,31 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     )
     if (await read($, settings)) {
       paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, -1], agents: [-1, -1] }
-      const innerW = Math.max(1, width - 4)
+      const innerW = Math.max(1, width - 2)
+      // a row's text is padded to the inside width, so one Button covers it and its hover inverts one bar — 2026-11-03
+      const rowHit = (key: string, scope: string, onPress: () => unknown, r: number) => [
+        <Box key={`${key}-bl`} position="absolute" top={r + 1} left={0}>
+          <Button key={`${key}-bl`} plain onPress={onPress} hover={{ scope, inverse: true }}>
+            <Text color="#6c6c7c">{'│'}</Text>
+          </Button>
+        </Box>,
+        <Box key={`${key}-br`} position="absolute" top={r + 1} right={0}>
+          <Button key={`${key}-br`} plain onPress={onPress} hover={{ scope, inverse: true }}>
+            <Text color="#6c6c7c">{'│'}</Text>
+          </Button>
+        </Box>,
+      ]
       const prefRow = (id: string, key: keyof Prefs, label: string, value: boolean) => {
         const mark = value ? `● ${tr.on}` : `○ ${tr.off}`
-        const room = Math.max(1, innerW - cells(mark))
+        const room = Math.max(1, innerW - cells(mark) - 2)
         const shown = cells(label) > room ? `${label.slice(0, Math.max(1, room - 1))}…` : label
         return (
-          <Button key={id} plain onPress={() => togglePref($, key)}>
-            <Text color={value ? '#3fbf8f' : '#6c6c7c'}>{`${fit(shown, room)}${mark}`}</Text>
+          <Button key={id} plain onPress={() => togglePref($, key)} hover={{ scope: id, inverse: true }}>
+            <Text color={value ? '#3fbf8f' : '#6c6c7c'}>{` ${fit(shown, room)}${mark} `}</Text>
           </Button>
         )
       }
+      const backPress = () => update($, settings, () => false)
       return (
         <Box flexDirection="column" width={width} height={body} overflow="hidden" backgroundColor="black">
           {banner}
@@ -2150,42 +2291,49 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
           {framed(
             'settings',
             tr.settings,
-            <Box flexDirection="column" borderStyle="round" borderColor="#6c6c7c" paddingX={1} width={width}>
-              {prefRow('set-autoCompact', 'autoCompact', tr.setAutoCompact, prefsNow.autoCompact)}
-              {prefRow('set-updateNotify', 'updateNotify', tr.setUpdateNotify, prefsNow.updateNotify)}
-              {prefRow('set-silentUpdate', 'silentUpdate', tr.setSilentUpdate, prefsNow.silentUpdate)}
-              <Button key="settings-back" plain onPress={() => update($, settings, () => false)}>
-                <Text color="#9a9aab">{fit(tr.back, innerW)}</Text>
-              </Button>
+            <Box flexDirection="column" width={width}>
+              <Box flexDirection="column" borderStyle="round" borderColor="#6c6c7c" width={width}>
+                {prefRow('set-autoCompact', 'autoCompact', tr.setAutoCompact, prefsNow.autoCompact)}
+                {prefRow('set-updateNotify', 'updateNotify', tr.setUpdateNotify, prefsNow.updateNotify)}
+                {prefRow('set-silentUpdate', 'silentUpdate', tr.setSilentUpdate, prefsNow.silentUpdate)}
+                <Button key="settings-back" plain onPress={backPress} hover={{ scope: 'set-back', inverse: true }}>
+                  <Text color="#9a9aab">{` ${fit(tr.back, innerW - 2)} `}</Text>
+                </Button>
+              </Box>
+              {rowHit('set-autoCompact', 'set-autoCompact', () => togglePref($, 'autoCompact'), 0)}
+              {rowHit('set-updateNotify', 'set-updateNotify', () => togglePref($, 'updateNotify'), 1)}
+              {rowHit('set-silentUpdate', 'set-silentUpdate', () => togglePref($, 'silentUpdate'), 2)}
+              {rowHit('settings-back', 'set-back', backPress, 3)}
             </Box>,
           )}
         </Box>
       )
     }
     // a Box border takes no press: its glyphs redrawn as Buttons, one hover scope inverting them all, make one target; hover on the inner Text is inert — 2026-10-31
+    const edgeBar = (id: string, top: number, text: string, color: string, onPress: () => unknown, scope: string) => (
+      <Box key={id} position="absolute" top={top} left={0}>
+        <Button key={id} plain onPress={onPress} hover={{ scope, inverse: true }}>
+          <Text color={color}>{text}</Text>
+        </Button>
+      </Box>
+    )
+    const edgeSides = (key: string, rows: number[], color: string, onPress: () => unknown, scope: string) =>
+      rows.flatMap(r => [
+        <Box key={`${key}-el${r}`} position="absolute" top={r} left={0}>
+          <Button key={`${key}-el${r}`} plain onPress={onPress} hover={{ scope, inverse: true }}>
+            <Text color={color}>{'│'}</Text>
+          </Button>
+        </Box>,
+        <Box key={`${key}-er${r}`} position="absolute" top={r} right={0}>
+          <Button key={`${key}-er${r}`} plain onPress={onPress} hover={{ scope, inverse: true }}>
+            <Text color={color}>{'│'}</Text>
+          </Button>
+        </Box>,
+      ])
     const edges = (key: string, w: number, tall: number, color: string, onPress: () => unknown) => [
-      <Box key={`${key}-et`} position="absolute" top={0} left={0}>
-        <Button key={`${key}-et`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
-          <Text color={color}>{`╭${'─'.repeat(w - 2)}╮`}</Text>
-        </Button>
-      </Box>,
-      <Box key={`${key}-eb`} position="absolute" bottom={0} left={0}>
-        <Button key={`${key}-eb`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
-          <Text color={color}>{`╰${'─'.repeat(w - 2)}╯`}</Text>
-        </Button>
-      </Box>,
-      ...Array.from({ length: tall - 2 }, (_, r) => [
-        <Box key={`${key}-el${r}`} position="absolute" top={r + 1} left={0}>
-          <Button key={`${key}-el${r}`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
-            <Text color={color}>{'│'}</Text>
-          </Button>
-        </Box>,
-        <Box key={`${key}-er${r}`} position="absolute" top={r + 1} right={0}>
-          <Button key={`${key}-er${r}`} plain onPress={onPress} hover={{ scope: `card-${key}`, inverse: true }}>
-            <Text color={color}>{'│'}</Text>
-          </Button>
-        </Box>,
-      ]).flat(),
+      edgeBar(`${key}-et`, 0, `╭${'─'.repeat(w - 2)}╮`, color, onPress, `card-${key}`),
+      edgeBar(`${key}-eb`, tall - 1, `╰${'─'.repeat(w - 2)}╯`, color, onPress, `card-${key}`),
+      ...edgeSides(key, Array.from({ length: tall - 2 }, (_, r) => r + 1), color, onPress, `card-${key}`),
     ]
     // a multi-line Button inverts only its first line on hover: one Button per line, one scope — 2026-10-31
     // inverse:false cancels the pointer's own inversion: inverted half blocks read as other glyphs — 2026-10-31
@@ -2215,7 +2363,7 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     // 2 cols each side, less only when the pane is too narrow for them — 2026-10-31
     const pillW = Math.min(Math.max(cells(pillText), cells(countdown)) + 4, width - 4 - 17 - 2)
     const centre = (s: string, w: number) => fit(' '.repeat(Math.max(0, Math.floor((w - cells(s)) / 2))) + s, w)
-    const card = (key: string, label: string, color: string, onPress: () => unknown) => {
+    const card = (key: string, label: string, color: string, cardW: number, onPress: () => unknown) => {
       const inner = cardW - 2
       const left = Math.max(0, Math.floor((inner - cells(label)) / 2))
       return (
@@ -2226,6 +2374,32 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
             </Button>
           </Box>
           {edges(key, cardW, 3, color, onPress)}
+        </Box>
+      )
+    }
+    // drawn row by row, no Box border: each half's glyphs are its own Buttons, the ┬│┴ seam belongs to neither — 2026-11-03
+    const sessionsCard = (color: string) => {
+      const piece = (id: string, text: string, scope: string, onPress: () => unknown) => (
+        <Button key={id} plain onPress={onPress} hover={{ scope, inverse: true }}>
+          <Text color={color}>{text}</Text>
+        </Button>
+      )
+      const open = () => sessions($)
+      const last = () => lastSession($)
+      const rows: [string, string, string, string, string][] = [
+        ['t', `╭${'─'.repeat(sessIn)}`, '┬', '─'.repeat(lastIn), '╮'],
+        ['m', `│${centre(S_LABEL, sessIn)}`, '│', centre(tr.lastSession, lastIn), '│'],
+        ['b', `╰${'─'.repeat(sessIn)}`, '┴', '─'.repeat(lastIn), '╯'],
+      ]
+      return (
+        <Box key="card-sessions" flexDirection="column" width={groupW}>
+          {rows.map(([r, left, seam, right, end]) => (
+            <Box key={`sess-${r}`} flexDirection="row">
+              {piece(r === 'm' ? 'sessions' : `sessions-${r}`, left, 'card-sessions', open)}
+              <Text color={color}>{seam}</Text>
+              {piece(r === 'm' ? 'last' : `last-${r}`, right + end, 'card-last', last)}
+            </Box>
+          ))}
         </Box>
       )
     }
@@ -2427,9 +2601,9 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
         )}
         {gap ? <Box height={1} /> : null}
         <Box flexDirection={isWide ? 'row' : 'column'} gap={isWide ? 1 : 0} width={width}>
-          {card('sessions', '☰ Sessions', '#b678e0', () => sessions($))}
-          {card('compact', '⇊ Compact', '#4f9cf0', () => compact($))}
-          {card('resume', '⟲ Resume', '#3fbf8f', () => resume($, e.surface))}
+          {sessionsCard('#b678e0')}
+          {card('compact', C_LABEL, '#4f9cf0', compactW, () => compact($))}
+          {card('resume', R_LABEL, '#3fbf8f', resumeW, () => resume($, e.surface))}
         </Box>
         {gap ? <Box height={1} /> : null}
         {framed(
