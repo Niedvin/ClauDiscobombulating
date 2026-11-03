@@ -1391,7 +1391,7 @@ async function posixHelper($: EngineInterface, cwd: string, id: string) {
   if (!pid) return undefined
   const hasProc = (await sh(`[ -r /proc/${pid}/cmdline ] && echo y`)).trim() === 'y'
   let argv = hasProc ? lines(await sh(`tr '\\0' '\\n' < /proc/${pid}/cmdline`)) : (await sh(`ps -ww -o args= -p ${pid}`)).trim().split(/\s+/)
-  if (!argv.length) return undefined
+  if (!argv.some(a => /claude/i.test(a))) return undefined
   // a node/bun install runs as `node cli.js …`: the script is part of the command — 2026-11-03
   const isRuntime = /(^|\/)(node|bun|deno)(\.exe)?$/.test(argv[0]!)
   const head = isRuntime ? argv.slice(0, 2) : argv.slice(0, 1)
@@ -1417,7 +1417,8 @@ async function posixHelper($: EngineInterface, cwd: string, id: string) {
   const tmp = `${(await $.env.get('TMPDIR').catch(() => undefined)) || '/tmp'}/claudisco-env-${pid}`
   const script = relaunchScript(pid, hasProc, tmp, open, wid)
   return async () => {
-    await $.process.run(['setsid', '-f', 'sh', '-c', script], { timeoutMs: 10000 })
+    // macOS has no setsid: nohup in a subshell outlives claude as well — 2026-11-03
+    await $.process.run(['sh', '-c', 'if command -v setsid >/dev/null; then setsid -f sh -c "$1"; else (nohup sh -c "$1" >/dev/null 2>&1 &); fi', '_', script], { timeoutMs: 10000 })
   }
 }
 
@@ -1427,7 +1428,7 @@ async function winHelper($: EngineInterface, cwd: string, id: string) {
   if (!pid) return undefined
   const line = await ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`)
   const argv = splitWin(line)
-  if (!argv.length) return undefined
+  if (!argv.some(a => /claude/i.test(a))) return undefined
   const isRuntime = /(^|[\\/])(node|bun)(\.exe)?$/i.test(argv[0]!)
   const head = isRuntime ? argv.slice(0, 2) : argv.slice(0, 1)
   const cmd = [...head.slice(0, -1), ...relaunchArgv([head.at(-1)!, ...argv.slice(head.length)], id, permMode)]
@@ -1437,12 +1438,12 @@ async function winHelper($: EngineInterface, cwd: string, id: string) {
   const start = wt
     ? `Start-Process wt.exe -ArgumentList ${list.map(q).join(',')}`
     : `Start-Process ${q(cmd[0]!)} -WorkingDirectory ${q(cwd)}${list.length ? ` -ArgumentList ${list.map(q).join(',')}` : ''}`
-  const script = `Start-Sleep -Milliseconds 500; Stop-Process -Id ${pid} -ErrorAction SilentlyContinue; Wait-Process -Id ${pid} -Timeout 10 -ErrorAction SilentlyContinue; Stop-Process -Id ${pid} -ErrorAction SilentlyContinue; Remove-Item Env:CLAUDECODE -ErrorAction SilentlyContinue; ${start}`
+  const script = `Start-Sleep -Milliseconds 1500; Stop-Process -Id ${pid} -ErrorAction SilentlyContinue; Wait-Process -Id ${pid} -Timeout 10 -ErrorAction SilentlyContinue; Stop-Process -Id ${pid} -ErrorAction SilentlyContinue; Remove-Item Env:CLAUDECODE, Env:CLAUDE_CODE_ENTRYPOINT -ErrorAction SilentlyContinue; ${start}; Remove-Item -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue`
   const dir = (await $.env.get('TEMP').catch(() => undefined)) || cwd
   const file = `${dir}\\claudisco-relaunch-${pid}.ps1`
   await $.fs.write(file, script)
   return async () => {
-    await ps(`Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',${q(file)}`)
+    await ps(`Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',${q(`"${file}"`)}`)
   }
 }
 
@@ -2224,16 +2225,16 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     const S_LABEL = '≡ Sessions'
     const C_LABEL = '⇊ Compact'
     const R_LABEL = '⟲ Resume'
-    const groupMin = cells(S_LABEL) + 1 + 3
+    const groupMin = cells(S_LABEL) + 1 + 4
     const isWide = width >= PANE_COLS && groupMin + cells(C_LABEL) + cells(R_LABEL) + 4 <= width - 2
     const third = Math.floor((width - 2) / 3)
     const groupW = isWide ? Math.max(groupMin, width - 2 - 2 * third) : width
     const compactW = isWide ? Math.ceil((width - 2 - groupW) / 2) : width
     const resumeW = isWide ? width - 2 - groupW - compactW : width
-    // ↶ gets ≈¼ of the joined card, odd so it centres, never squeezing the Sessions label — 2026-11-03
-    const lastRoom = Math.max(1, Math.min(5, Math.floor((groupW - 3) / 4), groupW - 3 - cells(S_LABEL)))
+    // ↶ gets ≈¼ of the pair, odd so it centres, never squeezing the Sessions label — 2026-11-03
+    const lastRoom = Math.max(1, Math.min(5, Math.floor((groupW - 4) / 4), groupW - 4 - cells(S_LABEL)))
     const lastIn = lastRoom % 2 ? lastRoom : lastRoom - 1
-    const sessIn = groupW - 3 - lastIn
+    const sessIn = groupW - 4 - lastIn
     const fireAt = isArmed ? alarm.at : nextAt(d.h, d.m, Date.now())
     const fieldW = width - 4
     const isBig = width >= BIG_TIMER_COLS
@@ -2270,12 +2271,12 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
       // a row's text is padded to the inside width, so one Button covers it and its hover inverts one bar — 2026-11-03
       const rowHit = (key: string, scope: string, onPress: () => unknown, r: number) => [
         <Box key={`${key}-bl`} position="absolute" top={r + 1} left={0}>
-          <Button key={`${key}-bl`} plain onPress={onPress} hover={{ scope, inverse: false }}>
+          <Button key={`${key}-bl`} plain onPress={onPress} hover={{ scope, inverse: true }}>
             <Text color="#6c6c7c">{'│'}</Text>
           </Button>
         </Box>,
         <Box key={`${key}-br`} position="absolute" top={r + 1} right={0}>
-          <Button key={`${key}-br`} plain onPress={onPress} hover={{ scope, inverse: false }}>
+          <Button key={`${key}-br`} plain onPress={onPress} hover={{ scope, inverse: true }}>
             <Text color="#6c6c7c">{'│'}</Text>
           </Button>
         </Box>,
@@ -2316,10 +2317,10 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
         </Box>
       )
     }
-    // a Box border takes no press: glyphs redrawn as Buttons in the card's scope, not inverted (an inverted cell overhangs the line by half a cell) — 2026-11-03
+    // a Box border takes no press: its glyphs redrawn as Buttons, one hover scope inverting them all, make one target — 2026-10-31
     const edgeBar = (id: string, top: number, text: string, color: string, onPress: () => unknown, scope: string) => (
       <Box key={id} position="absolute" top={top} left={0}>
-        <Button key={id} plain onPress={onPress} hover={{ scope, inverse: false }}>
+        <Button key={id} plain onPress={onPress} hover={{ scope, inverse: true }}>
           <Text color={color}>{text}</Text>
         </Button>
       </Box>
@@ -2327,12 +2328,12 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     const edgeSides = (key: string, rows: number[], color: string, onPress: () => unknown, scope: string) =>
       rows.flatMap(r => [
         <Box key={`${key}-el${r}`} position="absolute" top={r} left={0}>
-          <Button key={`${key}-el${r}`} plain onPress={onPress} hover={{ scope, inverse: false }}>
+          <Button key={`${key}-el${r}`} plain onPress={onPress} hover={{ scope, inverse: true }}>
             <Text color={color}>{'│'}</Text>
           </Button>
         </Box>,
         <Box key={`${key}-er${r}`} position="absolute" top={r} right={0}>
-          <Button key={`${key}-er${r}`} plain onPress={onPress} hover={{ scope, inverse: false }}>
+          <Button key={`${key}-er${r}`} plain onPress={onPress} hover={{ scope, inverse: true }}>
             <Text color={color}>{'│'}</Text>
           </Button>
         </Box>,
@@ -2384,37 +2385,13 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
         </Box>
       )
     }
-    // row by row, no Box border: only the inside inverts, border glyphs press but stay put; ┬│┴ belongs to neither — 2026-11-03
-    const sessionsCard = (color: string) => {
-      const piece = (id: string, text: string, scope: string, onPress: () => unknown, isFill = false) => (
-        <Button key={id} plain onPress={onPress} hover={{ scope, inverse: isFill }}>
-          <Text color={color}>{text}</Text>
-        </Button>
-      )
-      const open = () => sessions($)
-      const last = () => lastSession($)
-      return (
-        <Box key="card-sessions" flexDirection="column" width={groupW}>
-          <Box key="sess-t" flexDirection="row">
-            {piece('sessions-t', `╭${'─'.repeat(sessIn)}`, 'card-sessions', open)}
-            <Text color={color}>┬</Text>
-            {piece('last-t', `${'─'.repeat(lastIn)}╮`, 'card-last', last)}
-          </Box>
-          <Box key="sess-m" flexDirection="row">
-            {piece('sessions-l', '│', 'card-sessions', open)}
-            {piece('sessions', centre(S_LABEL, sessIn), 'card-sessions', open, true)}
-            <Text color={color}>│</Text>
-            {piece('last', centre(tr.lastSession, lastIn), 'card-last', last, true)}
-            {piece('last-r', '│', 'card-last', last)}
-          </Box>
-          <Box key="sess-b" flexDirection="row">
-            {piece('sessions-b', `╰${'─'.repeat(sessIn)}`, 'card-sessions', open)}
-            <Text color={color}>┴</Text>
-            {piece('last-b', `${'─'.repeat(lastIn)}╯`, 'card-last', last)}
-          </Box>
-        </Box>
-      )
-    }
+    // two cards touching, each with its own border: a shared seam cell would light with one half only and skew it — 2026-11-03
+    const sessionsCard = (color: string) => (
+      <Box key="sessions-pair" flexDirection="row" width={groupW}>
+        {card('sessions', S_LABEL, color, sessIn + 2, () => sessions($))}
+        {card('last', tr.lastSession, color, lastIn + 2, () => lastSession($))}
+      </Box>
+    )
     const t = await read($, tree)
     const tNames = [...t.dirs, ...t.drives]
     const tPaths = [...t.dirs.map(n => joinDir(t.dir, n)), ...t.drives.map(d => `${d}/`)]

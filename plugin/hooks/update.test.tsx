@@ -60,7 +60,7 @@ test('update row says click to update; a press updates, relaunches with the same
   await pane.press({ key: 'update' })
   await clock.advance(1000)
   expect(runs.some(a => a.join(' ').includes('plugin update ClauDiscobombulating@ClauDiscobombulating'))).toBe(true)
-  const helper = runs.find(a => a[0] === 'setsid')
+  const helper = runs.find(a => a[0] === 'sh' && (a[2] ?? '').includes('setsid -f'))
   expect(helper).toBeDefined()
   const script = helper![4]!
   for (const part of ['xfce4-terminal', '--hold', '--working-directory=/work dir']) expect(script).toContain(part)

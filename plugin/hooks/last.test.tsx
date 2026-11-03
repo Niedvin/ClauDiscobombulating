@@ -50,9 +50,7 @@ test('pane: the last-session half resumes the newest transcript that is not the 
   expect(s).toContain('≡ Sessions')
   expect(s).toContain('↶')
   expect(s).not.toContain('☰')
-  expect(s).toContain('┬')
-  expect(s).toContain('┴')
-  expect(s).not.toContain('├')
+  expect(s).not.toContain('┬')
 
   await pane.press({ key: 'last' })
   expect(dirs).toEqual(['/cfg/projects/-work-thing'])

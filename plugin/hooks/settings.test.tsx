@@ -81,14 +81,14 @@ test('settings rows: one hover scope and one inside-width text per row, and the 
     const row = await pane.find({ type: 'Button', key })
     expect(row?.text.length).toBe(inside)
     for (const side of ['bl', 'br']) {
-      expect(at(await drawn(), `${key}-${side}`)?.hover).toEqual({ scope: key, inverse: false })
+      expect(at(await drawn(), `${key}-${side}`)?.hover).toEqual({ scope: key, inverse: true })
       expect((await pane.find({ type: 'Button', key: `${key}-${side}` }))?.text).toBe('│')
     }
   }
   const back = await pane.find({ type: 'Button', key: 'settings-back' })
   expect(back?.text.length).toBe(inside)
   expect(at(await drawn(), 'settings-back')?.hover).toEqual({ scope: 'set-back', inverse: true })
-  expect(at(await drawn(), 'settings-back-br')?.hover).toEqual({ scope: 'set-back', inverse: false })
+  expect(at(await drawn(), 'settings-back-br')?.hover).toEqual({ scope: 'set-back', inverse: true })
 
   expect(store.autoCompact).toBeUndefined()
   await pane.press({ key: 'set-autoCompact-bl' })

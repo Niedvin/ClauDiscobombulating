@@ -98,11 +98,11 @@ export function newWindow(term: string, cwd: string, argv: readonly string[], is
   return name === 'xfce4-terminal' && !isInShell ? [win[0]!, '--hold', ...win.slice(1)] : win
 }
 
-// TERMs claude at once, KILL after 10 s, then opens `open` with the env claude started with, closes the old X11 window — 2026-11-03
+// TERM after 1.5 s (toast stays readable), KILL after 10 s, claude's own env, old X11 window closed — 2026-11-03
 export function relaunchScript(pid: number, hasProc: boolean, envFile: string, open: string, windowId: string): string {
   return [
     hasProc ? `cp /proc/${pid}/environ ${shq(envFile)} 2>/dev/null` : ':',
-    `sleep 0.5; kill -TERM ${pid} 2>/dev/null`,
+    `sleep 1.5; kill -TERM ${pid} 2>/dev/null`,
     'n=0',
     `while kill -0 ${pid} 2>/dev/null; do sleep 0.2; n=$((n+1)); [ $n = 50 ] && kill -KILL ${pid}; done`,
     `if [ -s ${shq(envFile)} ] && command -v bash >/dev/null; then`,
