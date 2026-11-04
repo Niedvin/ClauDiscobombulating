@@ -10,7 +10,7 @@ Switch: `isFull` (set by `enableFull`) and its atom `full` — draws read the at
 ## Layout
 
 - `install.sh` — macOS/Linux installer, GitHub copy only (`curl … | bash`, `--uninstall`). Same auto-update write as `install.ps1`.
-- `install.ps1` — installer. `.\install.ps1` / `-Uninstall` / `-WhatIf`. User scope, covers console + desktop.
+- `install.ps1` — installer. `.\install.ps1` / `-Uninstall` / `-WhatIf`. User scope, covers console + desktop, plus every other harness found (opencode, pi), no prompts. Command Code support is gone (3.0.2): installers delete its old files.
 - `.claude-plugin/marketplace.json` — marketplace `ClauDiscobombulating`, plugin at `./plugin`. Repo: github.com/Niedvin/ClauDiscobombulating (public).
 - `plugin/.claude-plugin/plugin.json` — manifest. Bump version on every release (auto-update keys on it).
 - `plugin/assets/cache-alert.mp3` — alert sound. Original `cache alert.mp3` in root is git-ignored.
@@ -21,7 +21,6 @@ Switch: `isFull` (set by `enableFull`) and its atom `full` — draws read the at
 - `plugin/.claude-plugin/types/` — engine-generated, git-ignored. Never edit.
 - `opencode/tui.tsx` — opencode TUI plugin, one file. Installed with `plugin.json` next to it (version source).
 - `pi/index.ts` — Pi coding agent extension, one file (third surface). Installed to `<pi agent dir>/extensions/claudiscobombulating/index.ts`.
-- `commandcode/index.ts` — Command Code mod (`cmdc`), one file, no build step; `commandcode/package.json` is its manifest and version source (read for the banner). Loaded with `--mod`, never installed into `~/.commandcode`.
 
 ## Dev loop
 
@@ -91,7 +90,7 @@ Release: bump `version` in `plugin.json`, commit (`release: X.Y.Z`), push, then 
 - Limits: `GET https://opencode.ai/zen/go/v1/usage` (undocumented), `Authorization: Bearer <opencode-go key>` from `<XDG_DATA_HOME or ~/.local/share>/opencode/auth.json`, needs a `User-Agent` (Cloudflare 1010 otherwise). Returns `usage.{rolling,weekly,monthly}.{percent,resetsAt}`. Polled every 60 s.
 - Cut on purpose (user: commands first, anything shaky goes): Claude limits, cache timer/alert, auto compact.
 - Sending: `client.session.prompt` uses the session's stored model, so `send` calls `client.session.switchModel` to `ui.model.current()` first. Compact = `keymap.dispatch("session.compact")`.
-- Effort = model variant (`ui.model.variant`); `ctrl+t` is opencode's own `variant.cycle`, its chord shown via `keymap.shortcuts("variant.cycle")` in the Effort box's bottom title. Wheel anywhere on the Effort box cycles it (up = higher; `WHEEL_GAP_MS` drops bursts).
+- Effort = model variant (`ui.model.variant`), drawn as the Claude pane's 5-step `▁▃▄▆█` meter by level name (`effortStep`), not one bar per variant; `ctrl+t` is opencode's own `variant.cycle`, its chord shown via `keymap.shortcuts("variant.cycle")` in the Effort box's bottom title. Wheel anywhere on the Effort box cycles it (up = higher; `WHEEL_GAP_MS` drops bursts).
 - Layout, top → bottom: name banner, Timer box (same 7-row layout; the text field opens `ui.dialog.prompt`, its ⏎ arms), Sessions/Compact/Resume cards in one row, Model box + Effort box (joined), Folder row (same tree as the Claude pane, 12 rows, wheel scrolls; pick = `client.session.move`, the store follows `session.moved`), Subagents box (purple) under them while any run. Same banner and Timer box as the Claude pane. OpenCode Go limits sit at the sidebar's bottom (`prepend: "sidebar.footer"`, 1 col padded: the footer has no scrollbar gutter); the home panel pushes them down with a grow spacer.
 - Subagents box: running child sessions of the session tree (root match, `data.session.status`), newest last. A row's model + `variant` effort from the child's last assistant message (`session.get` model when none), a finished child types `✓ Done` and fades for 2 s (same `doneLook` as the Claude side); activity from its last part: `⚙` tool (`toolHint`, streaming `…`), `✎` first text line, `✧` starting/thinking. A reload misses earlier deltas: `data.session.message.sync` once per running child while its list is empty (4 s throttle).
 - Home (before the first message) has no sidebar slot. `append: "app"` draws a 42-col panel and flips its parent (the app column) to `row` while the route is home and the terminal > 120 cols, back to `column` on cleanup. No session there: Resume, Compact hidden; Timer and Folder show — a timer fired on home creates a session (`session.create`) in the picked dir (`mem.dir`, plugin-local: no API moves the launch dir) — 2026-11-03. Rounded borders with `title`; sidebar content ≈ 37 cols, so the three cards fill it exactly — no padding inside them.
@@ -107,12 +106,3 @@ Release: bump `version` in `plugin.json`, commit (`release: X.Y.Z`), push, then 
 - Sessions → `pi.sendUserMessage("/sessions", { expandPromptTemplates: true })` → a registered command opens `SessionSelectorComponent` (`SessionManager.list`/`listAll` loaders) and resumes with `ctx.switchSession`. Compact → `ctx.compact()`. Resume → `pi.sendUserMessage("continue")`, or `{ deliverAs: "followUp" }` when busy.
 - UI strings: `UK`/`EN`, picked by the same `detectUk` as the opencode side; labels stay English.
 - Test: type-check against the pi node_modules; `pi --extension pi/index.ts -p "say hi"` must print no extension load error; live in `pi` fullscreen for mouse.
-
-## Command Code mod
-
-- One file `commandcode/index.ts`, default export `(cmd: ModApi) => void`; jiti loads the TS, no build. Pane id `pane`, opened on `onSessionStart`.
-- Pane: banner (`✳ ClauDiscobombulating <version>`), Timer box, Sessions/Compact/Resume cards, context line from `cmd.getContextUsage()`. Chords are the buttons' `hotkey` (drawn `alt+1 …` in the pane's last line); `p/v/w/u/m` are prompt-owned and never press, so minutes is `5`, not `m`.
-- Timer: `alt+1` +1 h, `alt+5` +5 min, pill `alt+t` arms the countdown; pressing it again sends at once; at zero it sends `continue` (`cmd.queueMessage` follow-up when `!cmd.isIdle()`). Countdown repaints from `cmd.clock.every(1000)` writing `now` to `cmd.state`.
-- Sessions card lists `~/.commandcode/projects/<cwd-slug>/*.jsonl` newest first (title = `meta.title`, else first user message). No ModApi call switches sessions (`cmd.sessions` is compact/tree/leafId/navigateTree only), so a pick copies `cmdc --resume <id>` (`cmd.ui.copy`) and shows it as a notice.
-- Compact = `cmd.sessions.compact()`, Resume = send `continue`. UI strings `UK`/`EN` picked once by `detectUk` (same as pi).
-- Verify: `cmdc mods inspect commandcode/index.ts`; `cmdc --no-session --mod <abs path to index.ts> -p "say hi"` from a throwaway cwd must print no mod load error.

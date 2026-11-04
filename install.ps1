@@ -7,8 +7,7 @@
   Restart Claude Code / the desktop app afterwards.
   -Repo owner/name installs from a GitHub copy of this folder instead of the local one
   and turns on marketplace auto-update in settings.json (the old file is kept in .backups).
-  With opencode present it asks to add the opencode sidebar plugin too.
-  With pi present it asks to add the pi extension too.
+  Every other harness found on the PC (opencode, pi) gets its copy too.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param([switch]$Uninstall, [string]$Repo)
@@ -68,34 +67,38 @@ $hasOpenCode = [bool](Get-Command opencode -ErrorAction SilentlyContinue) -or (T
 $PiBase = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $HOME '.pi/agent' }
 $PiExtDir = Join-Path $PiBase 'extensions/claudiscobombulating'
 $hasPi = [bool](Get-Command pi -ErrorAction SilentlyContinue) -or (Test-Path $PiBase)
+# Command Code support was dropped in 3.0.2; its files go on every run — 2026-11-04
+$CcFiles = @('claudiscobombulating.ts', 'claudiscobombulating.plugin.json', 'claudiscobombulating.package.json') | ForEach-Object { Join-Path $HOME ".commandcode/mods/$_" }
+
+function Get-Source([string]$Probe) {
+  # raw.githubusercontent.com serves a 5 min old copy after a push; the marketplace clone is fresh — 2026-10-11
+  $m = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json) | Where-Object { $_.name -eq $Market }
+  $src = @($m.installLocation, $m.path) | Where-Object { $_ -and (Test-Path (Join-Path $_ $Probe)) } | Select-Object -First 1
+  if (-not $src -and -not $Repo) { $src = $Root }
+  $src
+}
+
+function Copy-Part([string]$Src, [string]$From, [string]$To) {
+  $tmp = "$To.tmp"
+  if ($Src) { Copy-Item (Join-Path $Src $From) $tmp }
+  else { Invoke-WebRequest "https://api.github.com/repos/$Repo/contents/$($From)?ref=main" -Headers @{ Accept = 'application/vnd.github.raw' } -OutFile $tmp -UseBasicParsing }
+  if ((Get-Item $tmp).Length -eq 0) { throw "$From is empty" }
+  Move-Item $tmp $To -Force
+}
 
 function Install-OpenCode {
   if (-not $PSCmdlet.ShouldProcess($OcDir, 'install opencode plugin')) { return }
-  # raw.githubusercontent.com serves a 5 min old copy after a push; the marketplace clone is fresh — 2026-10-11
-  $m = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json) | Where-Object { $_.name -eq $Market }
-  $src = @($m.installLocation, $m.path) | Where-Object { $_ -and (Test-Path (Join-Path $_ 'opencode/tui.tsx')) } | Select-Object -First 1
-  if (-not $src -and -not $Repo) { $src = $Root }
+  $src = Get-Source 'opencode/tui.tsx'
   New-Item -ItemType Directory -Force $OcDir | Out-Null
-  foreach ($f in @(@('tui.tsx', 'opencode/tui.tsx'), @('plugin.json', 'plugin/.claude-plugin/plugin.json'))) {
-    $tmp = Join-Path $OcDir "$($f[0]).tmp"
-    if ($src) { Copy-Item (Join-Path $src $f[1]) $tmp }
-    else { Invoke-WebRequest "https://api.github.com/repos/$Repo/contents/$($f[1])?ref=main" -Headers @{ Accept = 'application/vnd.github.raw' } -OutFile $tmp -UseBasicParsing }
-    if ((Get-Item $tmp).Length -eq 0) { throw "$($f[0]) is empty" }
-    Move-Item $tmp (Join-Path $OcDir $f[0]) -Force
-  }
+  Copy-Part $src 'opencode/tui.tsx' (Join-Path $OcDir 'tui.tsx')
+  Copy-Part $src 'plugin/.claude-plugin/plugin.json' (Join-Path $OcDir 'plugin.json')
 }
 
 function Install-Pi {
   if (-not $PSCmdlet.ShouldProcess($PiExtDir, 'install pi extension')) { return }
-  $m = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json) | Where-Object { $_.name -eq $Market }
-  $src = @($m.installLocation, $m.path) | Where-Object { $_ -and (Test-Path (Join-Path $_ 'pi/index.ts')) } | Select-Object -First 1
-  if (-not $src -and -not $Repo) { $src = $Root }
+  $src = Get-Source 'pi/index.ts'
   New-Item -ItemType Directory -Force $PiExtDir | Out-Null
-  $tmp = Join-Path $PiExtDir 'index.ts.tmp'
-  if ($src) { Copy-Item (Join-Path $src 'pi/index.ts') $tmp }
-  else { Invoke-WebRequest "https://api.github.com/repos/$Repo/contents/pi/index.ts?ref=main" -Headers @{ Accept = 'application/vnd.github.raw' } -OutFile $tmp -UseBasicParsing }
-  if ((Get-Item $tmp).Length -eq 0) { throw 'index.ts is empty' }
-  Move-Item $tmp (Join-Path $PiExtDir 'index.ts') -Force
+  Copy-Part $src 'pi/index.ts' (Join-Path $PiExtDir 'index.ts')
 }
 
 $markets = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json)
@@ -112,24 +115,13 @@ if ($Uninstall) {
   Set-AutoUpdate $false ''
   if ((Test-Path $OcDir) -and $PSCmdlet.ShouldProcess($OcDir, 'remove opencode plugin')) { Remove-Item -Recurse -Force $OcDir }
   if ((Test-Path $PiExtDir) -and $PSCmdlet.ShouldProcess($PiExtDir, 'remove pi extension')) { Remove-Item -Recurse -Force $PiExtDir }
+  foreach ($p in $CcFiles) { if ((Test-Path $p) -and $PSCmdlet.ShouldProcess($p, 'remove Command Code mod')) { Remove-Item -Force $p } }
   if (-not $WhatIfPreference) { Write-Host 'ClauDiscobombulating removed.' }
   return
 }
 
 $hasLocal = $Root -and (Test-Path (Join-Path $Root 'plugin/.claude-plugin/plugin.json'))
 if (-not $hasLocal -and -not $Repo) { throw "plugin folder missing in $Root" }
-$withOpenCode = $false
-if ($hasOpenCode) {
-  # no console to ask (redirected input) counts as the default yes — 2026-10-11
-  $answer = try { Read-Host 'opencode found. Install the opencode plugin too? [Y/n]' } catch { '' }
-  # Read-Host answers $null at EOF, and $null -notmatch is $null, not true — 2026-10-12
-  $withOpenCode = ([string]$answer) -notmatch '^\s*n'
-}
-$withPi = $false
-if ($hasPi) {
-  $answer = try { Read-Host 'pi found. Install the pi extension too? [Y/n]' } catch { '' }
-  $withPi = ([string]$answer) -notmatch '^\s*n'
-}
 if ($hasLocal) { Invoke-Claude @('plugin', 'validate', (Join-Path $Root 'plugin')) }
 foreach ($id in $legacyPlugins) { Invoke-Claude @('plugin', 'uninstall', $id, '--scope', 'user') }
 foreach ($name in $legacyMarkets) { Invoke-Claude @('plugin', 'marketplace', 'remove', $name) }
@@ -139,12 +131,13 @@ Invoke-Claude @('plugin', 'marketplace', 'add', $(if ($Repo) { $Repo } else { $R
 Invoke-Claude @('plugin', 'install', $Plugin, '--scope', 'user')
 # a local-folder install has no remote to pull from — 2026-10-06
 if ($Repo) { Set-AutoUpdate $true $Repo }
-if ($withOpenCode) { Install-OpenCode }
-if ($withPi) { Install-Pi }
+if ($hasOpenCode) { Install-OpenCode }
+if ($hasPi) { Install-Pi }
+foreach ($p in $CcFiles) { if ((Test-Path $p) -and $PSCmdlet.ShouldProcess($p, 'remove Command Code mod')) { Remove-Item -Force $p } }
 if (-not $WhatIfPreference) {
   Write-Host 'ClauDiscobombulating installed. Restart Claude Code and the desktop app.'
-  if ($withOpenCode) { Write-Host "opencode plugin in $OcDir. Restart opencode." }
-  if ($withPi) { Write-Host "pi extension in $PiExtDir. Restart pi." }
+  if ($hasOpenCode) { Write-Host "opencode plugin in $OcDir (reloads by itself)." }
+  if ($hasPi) { Write-Host "pi extension in $PiExtDir. Restart pi." }
 }
 
 

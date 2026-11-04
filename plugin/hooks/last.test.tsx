@@ -53,7 +53,8 @@ test('pane: the last-session half resumes the newest transcript that is not the 
   expect(s).not.toContain('┬')
 
   await pane.press({ key: 'last' })
-  expect(dirs).toEqual(['/cfg/projects/-work-thing'])
+  // the test engine resolves paths per OS: Windows hands back C:\cfg\… — 2026-11-04
+  expect(dirs.map(d => d.replace(/\\/g, '/').replace(/^[A-Za-z]:/, ''))).toEqual(['/cfg/projects/-work-thing'])
   expect(ran).toEqual(['resume new-bbbb'])
   expect(toasts).toEqual([])
 })

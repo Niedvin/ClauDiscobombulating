@@ -11,35 +11,32 @@ OC_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
 OC_DIR="$OC_BASE/opencode/plugins/claudiscobombulating"
 PI_BASE="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 PI_EXT_DIR="$PI_BASE/extensions/claudiscobombulating"
+# Command Code support was dropped in 3.0.2; its files go on every run — 2026-11-04
+CC_DIR="$HOME/.commandcode/mods"
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found in PATH" >&2; exit 1; }
 
+# raw.githubusercontent.com serves a 5 min old copy after a push; the marketplace clone is fresh — 2026-10-11
+copy_part() {
+  local from="$1" to="$2" clone="$CONFIG/plugins/marketplaces/$MARKET"
+  if [ -s "$clone/$from" ]; then
+    cp "$clone/$from" "$to.tmp"
+  else
+    curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$from?ref=main" -o "$to.tmp"
+  fi
+  [ -s "$to.tmp" ] || { echo "$from is empty" >&2; exit 1; }
+  mv -f "$to.tmp" "$to"
+}
+
 install_opencode() {
-  # raw.githubusercontent.com serves a 5 min old copy after a push; the marketplace clone is fresh — 2026-10-11
-  local clone="$CONFIG/plugins/marketplaces/$MARKET"
   mkdir -p "$OC_DIR"
-  for pair in tui.tsx:opencode/tui.tsx plugin.json:plugin/.claude-plugin/plugin.json; do
-    local name="${pair%%:*}" src="${pair#*:}"
-    if [ -s "$clone/$src" ]; then
-      cp "$clone/$src" "$OC_DIR/$name.tmp"
-    else
-      curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$src?ref=main" -o "$OC_DIR/$name.tmp"
-    fi
-    [ -s "$OC_DIR/$name.tmp" ] || { echo "$name is empty" >&2; exit 1; }
-    mv -f "$OC_DIR/$name.tmp" "$OC_DIR/$name"
-  done
+  copy_part opencode/tui.tsx "$OC_DIR/tui.tsx"
+  copy_part plugin/.claude-plugin/plugin.json "$OC_DIR/plugin.json"
 }
 
 install_pi() {
-  local clone="$CONFIG/plugins/marketplaces/$MARKET"
   mkdir -p "$PI_EXT_DIR"
-  if [ -s "$clone/pi/index.ts" ]; then
-    cp "$clone/pi/index.ts" "$PI_EXT_DIR/index.ts.tmp"
-  else
-    curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/pi/index.ts?ref=main" -o "$PI_EXT_DIR/index.ts.tmp"
-  fi
-  [ -s "$PI_EXT_DIR/index.ts.tmp" ] || { echo "pi index.ts is empty" >&2; exit 1; }
-  mv -f "$PI_EXT_DIR/index.ts.tmp" "$PI_EXT_DIR/index.ts"
+  copy_part pi/index.ts "$PI_EXT_DIR/index.ts"
 }
 
 set_autoupdate() {
@@ -112,31 +109,24 @@ if [ "${1:-}" = "--uninstall" ]; then
   set_autoupdate 0
   rm -rf "$OC_DIR"
   rm -rf "$PI_EXT_DIR"
+  rm -f "$CC_DIR/claudiscobombulating.ts" "$CC_DIR/claudiscobombulating.plugin.json" "$CC_DIR/claudiscobombulating.package.json"
   echo "ClauDiscobombulating removed."
   exit 0
 fi
 
 with_opencode=0
-if command -v opencode >/dev/null 2>&1 || [ -d "$OC_BASE/opencode" ]; then
-  printf 'opencode found. Install the opencode plugin too? [Y/n] '
-  # piped through curl stdin is the script itself, so ask the terminal — 2026-10-11
-  { read -r answer </dev/tty; } 2>/dev/null || answer=""
-  case "$answer" in [nN]*) ;; *) with_opencode=1 ;; esac
-fi
+{ command -v opencode >/dev/null 2>&1 || [ -d "$OC_BASE/opencode" ]; } && with_opencode=1
 with_pi=0
-if command -v pi >/dev/null 2>&1 || [ -d "$PI_BASE" ]; then
-  printf 'pi found. Install the pi extension too? [Y/n] '
-  { read -r answer </dev/tty; } 2>/dev/null || answer=""
-  case "$answer" in [nN]*) ;; *) with_pi=1 ;; esac
-fi
+{ command -v pi >/dev/null 2>&1 || [ -d "$PI_BASE" ]; } && with_pi=1
 
 claude plugin marketplace add "$REPO"
 claude plugin install "$PLUGIN" --scope user
 set_autoupdate 1
 [ "$with_opencode" = 1 ] && install_opencode
 [ "$with_pi" = 1 ] && install_pi
+rm -f "$CC_DIR/claudiscobombulating.ts" "$CC_DIR/claudiscobombulating.plugin.json" "$CC_DIR/claudiscobombulating.package.json"
 echo "ClauDiscobombulating installed. Restart Claude Code and the desktop app."
-[ "$with_opencode" = 1 ] && echo "opencode plugin in $OC_DIR. Restart opencode."
+[ "$with_opencode" = 1 ] && echo "opencode plugin in $OC_DIR (reloads by itself)."
 [ "$with_pi" = 1 ] && echo "pi extension in $PI_EXT_DIR. Restart pi."
 exit 0
 

@@ -26,6 +26,7 @@ const TIMER_COLON_COL = 8
 // border, padding, 7-col big `HH`, colon centred at col 10 — 2026-10-31
 const BIG_COLON_COL = 11
 const DIGIT_HOVER = '#9ad0f0'
+const GEAR_LIT = '#b678e0'
 const RESUME_TERMINAL = '--resume'
 const RESUME_OTHER = 'continue'
 const WHEEL_GAP_MS = 150
@@ -2179,11 +2180,17 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
             <Text color="#f0b429">{fit(tr.updateHint(latestV), Math.max(1, width - 2))}</Text>
           </Button>
         ) : null}
-        {/* ⚙ is 1 cell to the engine, but terminals draw its emoji glyph 2 wide: the trailing blank takes the overflow — 2026-11-03 */}
-        <Box position="absolute" top={0} right={0}>
-          <Button key="gear" plain onPress={() => update($, settings, v => !v)} hover={{ scope: 'gear', inverse: true }}>
-            <Text color="#9a9aab">{' ⚙ '}</Text>
+        {/* lit gear = purple cell + half-block caps: half-cell margins, centred; inverted grey hid the grey glyph — 2026-11-04 */}
+        <Box position="absolute" top={0} right={0} width={3} paddingLeft={1}>
+          <Button key="gear" plain onPress={() => update($, settings, v => !v)} hover={{ scope: 'gear', inverse: false, backgroundColor: GEAR_LIT }}>
+            <Text color="#9a9aab">⚙</Text>
           </Button>
+          <Box position="absolute" top={0} left={0} display="none" hover={{ scope: 'gear', display: 'flex' }}>
+            <Text color={GEAR_LIT}>▐</Text>
+          </Box>
+          <Box position="absolute" top={0} left={2} display="none" hover={{ scope: 'gear', display: 'flex' }}>
+            <Text color={GEAR_LIT}>▌</Text>
+          </Box>
         </Box>
       </Box>
     )

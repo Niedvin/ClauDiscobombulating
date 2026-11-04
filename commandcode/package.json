@@ -1,9 +1,0 @@
-{
-	"name": "claudiscobombulating-commandcode",
-	"version": "0.1.0",
-	"description": "ClauDiscobombulating pane for Command Code: timer, sessions, compact, resume, context.",
-	"keywords": ["cmd-mod"],
-	"commandcode": {
-		"mods": ["./index.ts"]
-	}
-}

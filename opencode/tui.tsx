@@ -20,7 +20,8 @@ const RESUME_TEXT = "continue"
 const USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
 const USAGE_EVERY_MS = 60000
 const KINDS: Kind[] = ["rolling", "weekly", "monthly"]
-const EFFORT_BARS = "▁▂▃▄▅▆▇█"
+// same 5-step meter as the Claude pane, whatever variants the model offers — 2026-11-04
+const EFFORT_BARS = "▁▃▄▆█"
 const TIMER_ROWS = 7
 // big digits: 17 cols of time + ≤16-col pill; 36 not 38 ∵ opencode sidebar content is 37 wide — 2026-11-03
 const BIG_TIMER_COLS = 36
@@ -105,6 +106,8 @@ const EN: typeof UK = {
   subWrite: "writing…",
 }
 
+const EFFORT_HUES = [BLUE, GREEN, GREEN, GREEN, RED]
+const effortStep = (v: string | undefined) => (!v ? -1 : /^(none|minimal|low)$/.test(v) ? 0 : v === "medium" ? 1 : v === "xhigh" ? 3 : v === "max" ? 4 : 2)
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
 const two = (n: number) => String(n).padStart(2, "0")
 const isRootDir = (p: string) => /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
@@ -744,12 +747,8 @@ function setup(context: Ctx) {
                 </box>
               </box>
               <text>
-                <For each={variants()}>
-                  {(v, k) => {
-                    const at = () => variants().indexOf(variant() ?? "")
-                    const bar = EFFORT_BARS[Math.min(EFFORT_BARS.length - 1, Math.round((k() * (EFFORT_BARS.length - 1)) / Math.max(1, variants().length - 1)))]
-                    return <span style={{ fg: k() <= at() ? (effortHue(v) ?? GREEN) : theme.border.base }}>{bar}</span>
-                  }}
+                <For each={[...EFFORT_BARS]}>
+                  {(bar, k) => <span style={{ fg: k() <= effortStep(variant()) ? EFFORT_HUES[k()] : theme.border.base }}>{bar}</span>}
                 </For>
               </text>
             </box>
