@@ -1,12 +1,12 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { Renderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js"
 import { spawn } from "node:child_process"
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 type Ctx = Plugin.Context
 type Window = { percent: number; resetsAt?: string }
@@ -20,12 +20,16 @@ const RESUME_TEXT = "continue"
 const USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
 const USAGE_EVERY_MS = 60000
 const KINDS: Kind[] = ["rolling", "weekly", "monthly"]
-// same 5-step meter as the Claude pane, whatever variants the model offers — 2026-11-04
+// one bar per variant the model has, each drawn as its level is on the Claude pane — 2026-11-05
 const EFFORT_BARS = "▁▃▄▆█"
 const TIMER_ROWS = 7
 // big digits: 17 cols of time + ≤16-col pill; 36 not 38 ∵ opencode sidebar content is 37 wide — 2026-11-03
 const BIG_TIMER_COLS = 36
 const DIGIT_HOVER = "#9ad0f0"
+const GEAR_LIT = "#b678e0"
+const ROW_LIT = "#2a2a34"
+const DANCE_FRAME_MS = 80
+const STAGE_MIN_ROWS = 15
 const RED = "#ef5b5b"
 const YELLOW = "#f0b429"
 const GREEN = "#3fbf8f"
@@ -77,6 +81,16 @@ const UK = {
   subThink: "думає…",
   done: "Готово",
   subWrite: "пише…",
+  noLastSession: "Немає попередньої сесії",
+  upToDate: (v: string) => `v${v} — остання версія`,
+  checkFailed: "Не вдалося перевірити версію",
+  settings: "Налаштування",
+  setUpdateNotify: "Сповіщення про версії",
+  setSilentUpdate: "Тихе оновлення",
+  back: "← назад",
+  on: "увімк",
+  off: "вимк",
+  boom: "БАХ!",
 }
 const EN: typeof UK = {
   defaultText: "continue",
@@ -104,6 +118,16 @@ const EN: typeof UK = {
   subThink: "thinking…",
   done: "Done",
   subWrite: "writing…",
+  noLastSession: "No previous session",
+  upToDate: v => `v${v} is the latest`,
+  checkFailed: "Could not check the version",
+  settings: "Settings",
+  setUpdateNotify: "Version notifications",
+  setSilentUpdate: "Silent update",
+  back: "← back",
+  on: "on",
+  off: "off",
+  boom: "BOOM!",
 }
 
 const EFFORT_HUES = [BLUE, GREEN, GREEN, GREEN, RED]
@@ -254,6 +278,9 @@ function setup(context: Ctx) {
   const [mem, setMem] = context.storage.memory("state", {
     initial: { timer: { at: 0, text: "", sessionID: "" }, draft: { h: 0, m: 0, isSet: false }, latest: "", dir: "" },
   })
+  const [prefs, setPrefs] = context.storage.store("prefs", { initial: { updateNotify: true, silentUpdate: false } })
+  const [showSettings, setShowSettings] = createSignal(false)
+  const hasUpdate = () => !!mem.latest && newerThan(mem.latest, version) && prefs.updateNotify && !prefs.silentUpdate
 
   let version = "?"
   let repo = "Niedvin/ClauDiscobombulating"
@@ -391,15 +418,19 @@ function setup(context: Ctx) {
     return cur ? modelLabel(cur.modelID, cur.providerID) : "…"
   }
 
-  async function selfUpdate() {
+  async function selfUpdate(quiet = false) {
     const v = mem.latest
     try {
-      const [code, manifest] = await Promise.all([fromMain("opencode/tui.tsx"), fromMain("plugin/.claude-plugin/plugin.json")])
+      const [code, manifest, scene] = await Promise.all([fromMain("opencode/tui.tsx"), fromMain("plugin/.claude-plugin/plugin.json"), fromMain("plugin/hooks/dance.ts")])
       if (!code.ok || !manifest.ok) throw new Error(`HTTP ${code.status}/${manifest.status}`)
       const src = await code.text()
       const json = await manifest.text()
+      const dance = scene.ok ? await scene.text() : ""
       if (src.length < 1000 || !src.includes("Plugin.define") || JSON.parse(json).version !== v) throw new Error("bad download")
-      for (const [name, body] of [["tui.tsx", src], ["plugin.json", json]] as const) {
+      // tui.tsx last: its write is what hot-reloads, and the reload must read the new plugin.json — 2026-11-05
+      const files: [string, string][] = [["plugin.json", json], ["tui.tsx", src]]
+      if (dance.includes("danceCells")) files.unshift(["dance.ts", dance])
+      for (const [name, body] of files) {
         const target = path.join(here, name)
         writeFileSync(`${target}.tmp`, body)
         renameSync(`${target}.tmp`, target)
@@ -407,19 +438,108 @@ function setup(context: Ctx) {
       setMem(s => {
         s.latest = ""
       })
-      ui.toast.show({ message: tr().updateDone(v), variant: "success" })
+      if (!quiet) ui.toast.show({ message: tr().updateDone(v), variant: "success" })
     } catch {
-      ui.toast.show({ message: tr().updateFailed, variant: "error" })
+      if (!quiet) ui.toast.show({ message: tr().updateFailed, variant: "error" })
     }
   }
 
-  void fromMain("plugin/.claude-plugin/plugin.json")
-    .then(r => (r.ok ? (r.json() as Promise<{ version?: unknown }>) : undefined))
-    .then(m => {
-      const v = m?.version
-      if (typeof v === "string" && newerThan(v, version)) setMem(s => void (s.latest = v))
-    })
+  let silentFor = ""
+  async function checkVersion() {
+    const r = await fromMain("plugin/.claude-plugin/plugin.json")
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const v = ((await r.json()) as { version?: unknown }).version
+    if (typeof v !== "string" || !newerThan(v, version)) return ""
+    setMem(s => void (s.latest = v))
+    // silent update wins over the notice, once per found version — 2026-11-05
+    if (prefs.silentUpdate && silentFor !== v) {
+      silentFor = v
+      void selfUpdate(true)
+    }
+    return v
+  }
+  void checkVersion().catch(() => undefined)
+
+  async function recheckVersion() {
+    try {
+      const v = await checkVersion()
+      ui.toast.show({ message: v ? `✦ ${tr().updateAvail} v${v}` : tr().upToDate(version), variant: v ? "info" : "success" })
+    } catch {
+      ui.toast.show({ message: tr().checkFailed, variant: "error" })
+    }
+  }
+
+  // ↶: the newest other top-level session in the same folder — 2026-11-05
+  async function lastSession(current?: string) {
+    try {
+      const directory = (current && data.session.get(current)?.location.directory) || homeDir()
+      const r = await client.session.list({ parentID: null, archived: false, directory, order: "desc", limit: 20 })
+      const prev = r.data
+        .filter(s => s.id !== current && !s.parentID && !s.time.archived)
+        .toSorted((a, b) => b.time.updated - a.time.updated)[0]
+      if (!prev) return ui.toast.show({ message: tr().noLastSession, variant: "info" })
+      ui.router.navigate({ type: "session", sessionID: prev.id })
+    } catch {
+      ui.toast.show({ message: tr().noLastSession, variant: "error" })
+    }
+  }
+
+  // the scene is plugin/hooks/dance.ts copied beside this file; an older install without it just never dances — 2026-11-05
+  type Scene = { DANCE_MS: number; danceCells(w: number, rows: number, t: number, word?: string, head?: unknown): string }
+  let scene: Scene | undefined
+  // by absolute URL: opencode loads this file from a copy, so "./dance.ts" resolves elsewhere — 2026-11-05
+  void import(pathToFileURL(path.join(here, "dance.ts")).href)
+    .then(m => (scene = m as Scene))
     .catch(() => undefined)
+  const [danceAt, setDanceAt] = createSignal(0)
+  const [danceNow, setDanceNow] = createSignal(0)
+  let danceTimer: ReturnType<typeof setInterval> | undefined
+  function startDance() {
+    if (!scene || danceAt()) return
+    const at = Date.now()
+    setDanceAt(at)
+    setDanceNow(at)
+    danceTimer = setInterval(() => {
+      const t = Date.now()
+      if (t - at >= (scene?.DANCE_MS ?? 0)) {
+        clearInterval(danceTimer)
+        danceTimer = undefined
+        return setDanceAt(0)
+      }
+      setDanceNow(t)
+    }, DANCE_FRAME_MS)
+  }
+  const DEF = 0x01000000
+  const hex = (n: number) => (n >= DEF ? undefined : `#${n.toString(16).padStart(6, "0")}`)
+  type Run = { text: string; fg?: string; bg?: string }
+  function danceRows(w: number, rows: number) {
+    if (!scene) return [] as Run[][]
+    const toRgb = (h: string) => parseInt(h.slice(1), 16)
+    const head = {
+      name: NAME,
+      colors: hues.map(toRgb),
+      tail: `  v${version}`,
+      update: hasUpdate() ? `✦ ${tr().updateAvail} v${mem.latest}`.slice(0, Math.max(1, w - 2)) : "",
+      border: toRgb(hues[0]!),
+    }
+    const buf = Buffer.from(scene.danceCells(w, rows, (danceNow() - danceAt()) / 1000, tr().boom, head), "base64")
+    const out: Run[][] = []
+    for (let r = 0; r < rows; r++) {
+      const line: Run[] = []
+      for (let c = 0; c < w; c++) {
+        const i = (r * w + c) * 12
+        const cp = buf.readUInt32LE(i)
+        const fg = hex(buf.readUInt32LE(i + 4))
+        const bg = hex(buf.readUInt32LE(i + 8))
+        const ch = String.fromCodePoint(cp || 0x20)
+        const last = line[line.length - 1]
+        if (last && last.fg === fg && last.bg === bg) last.text += ch
+        else line.push({ text: ch, fg, bg })
+      }
+      out.push(line)
+    }
+    return out
+  }
 
   let polled = 0
   let seenAt = Date.now()
@@ -481,8 +601,8 @@ function setup(context: Ctx) {
     </text>
   )
 
-  const Card = (p: { label: string; fg: string; width?: number; onClick: () => void }) => (
-    <box border borderStyle="rounded" borderColor={p.fg} width={p.width} flexGrow={p.width ? 0 : 1} flexBasis={p.width ?? 0} alignItems="center" onMouseUp={() => p.onClick()}>
+  const Card = (p: { label: string; fg: string; width?: number; basis?: number; onClick: () => void }) => (
+    <box border borderStyle="rounded" borderColor={p.fg} width={p.width} flexGrow={p.width ? 0 : 1} flexBasis={p.width ?? p.basis ?? 0} alignItems="center" onMouseUp={() => p.onClick()}>
       <text fg={p.fg}>{p.label}</text>
     </box>
   )
@@ -508,6 +628,12 @@ function setup(context: Ctx) {
     const [hoverH, setHoverH] = createSignal(false)
     const [hoverM, setHoverM] = createSignal(false)
     const [hoverPill, setHoverPill] = createSignal(false)
+    const [hoverGear, setHoverGear] = createSignal(false)
+    // the scene keeps the height the panel had when the name was pressed — 2026-11-05
+    let stageRows = STAGE_MIN_ROWS
+    createEffect(() => {
+      if (danceAt() && rootEl) stageRows = Math.max(stageRows, rootEl.height)
+    })
     const dims = useTerminalDimensions()
     let rootEl: Renderable | undefined
     let spacerEl: Renderable | undefined
@@ -554,214 +680,292 @@ function setup(context: Ctx) {
     })
     return (
       <box ref={r => (rootEl = r)} onSizeChange={measure} minHeight={fill() || undefined} gap={1}>
-        <box border borderStyle="rounded" borderColor={hues[0]} alignItems="center">
-          <text>
-            <b>
-              <For each={[...NAME]}>{(ch, k) => <span style={{ fg: hues[k()] }}>{ch}</span>}</For>
-            </b>
-            <span style={{ fg: theme.text.muted }}>{`  v${version}`}</span>
-          </text>
-          <Show when={mem.latest && newerThan(mem.latest, version)}>
-            <Click label={`✦ ${tr().updateAvail} v${mem.latest}`} fg={YELLOW} onClick={() => void selfUpdate()} />
-          </Show>
-        </box>
-
-        <box
-          border
-          borderStyle="rounded"
-          borderColor={armed() ? YELLOW : theme.border.base}
-          title={` ${tr().timer} `}
-          titleColor={theme.text.muted}
-          paddingX={1}
-          height={isBig() ? TIMER_ROWS + 2 : TIMER_ROWS}
-        >
-          <box flexDirection="row" justifyContent="space-between">
+        <Show when={!danceAt()} fallback={<Stage width={timerW()} height={Math.max(STAGE_MIN_ROWS, Math.min(60, stageRows))} />}>
+          <box border borderStyle="rounded" borderColor={hues[0]} alignItems="center">
             <box flexDirection="row">
-              <Show when={!isBig()}>
-                <text fg={digitColor()}>{"⏰ "}</text>
-              </Show>
-              <box
-                flexDirection="column"
-                onMouseUp={() => !armed() && nudge("h", 1)}
-                onMouseScroll={e => wheel(e, d => nudge("h", d))}
-                onMouseOver={() => setHoverH(true)}
-                onMouseOut={() => setHoverH(false)}
-              >
-                <For each={isBig() ? bigDigits(two(hh())) : [two(hh())]}>
-                  {line => (
-                    <text fg={!armed() && hoverH() ? DIGIT_HOVER : digitColor()}>
-                      <b>{line}</b>
-                    </text>
-                  )}
-                </For>
+              <text onMouseUp={startDance}>
+                <b>
+                  <For each={[...NAME]}>{(ch, k) => <span style={{ fg: hues[k()] }}>{ch}</span>}</For>
+                </b>
+              </text>
+              <text fg={theme.text.muted}>{"  "}</text>
+              <text fg={theme.text.muted} onMouseUp={() => void recheckVersion()}>{`v${version}`}</text>
+            </box>
+            <Show when={hasUpdate()}>
+              <Click label={`✦ ${tr().updateAvail} v${mem.latest}`} fg={YELLOW} onClick={() => void selfUpdate()} />
+            </Show>
+            {/* lit gear = purple cell + half-block caps, as on the Claude pane — 2026-11-05 */}
+            <box
+              position="absolute"
+              top={0}
+              right={0}
+              onMouseUp={() => setShowSettings(v => !v)}
+              onMouseOver={() => setHoverGear(true)}
+              onMouseOut={() => setHoverGear(false)}
+            >
+              <text>
+                <span style={{ fg: GEAR_LIT }}>{hoverGear() ? "▐" : " "}</span>
+                <span style={{ fg: "#9a9aab", bg: hoverGear() ? GEAR_LIT : undefined }}>⚙</span>
+                <span style={{ fg: GEAR_LIT }}>{hoverGear() ? "▌" : " "}</span>
+              </text>
+            </box>
+          </box>
+
+          <Show when={!showSettings()} fallback={<Settings />}>
+            <box
+              border
+              borderStyle="rounded"
+              borderColor={armed() ? YELLOW : theme.border.base}
+              title={` ${tr().timer} `}
+              titleColor={theme.text.muted}
+              paddingX={1}
+              height={isBig() ? TIMER_ROWS + 2 : TIMER_ROWS}
+            >
+              <box flexDirection="row" justifyContent="space-between">
+                <box flexDirection="row">
+                  <Show when={!isBig()}>
+                    <text fg={digitColor()}>{"⏰ "}</text>
+                  </Show>
+                  <box
+                    flexDirection="column"
+                    onMouseUp={() => !armed() && nudge("h", 1)}
+                    onMouseScroll={e => wheel(e, d => nudge("h", d))}
+                    onMouseOver={() => setHoverH(true)}
+                    onMouseOut={() => setHoverH(false)}
+                  >
+                    <For each={isBig() ? bigDigits(two(hh())) : [two(hh())]}>
+                      {line => (
+                        <text fg={!armed() && hoverH() ? DIGIT_HOVER : digitColor()}>
+                          <b>{line}</b>
+                        </text>
+                      )}
+                    </For>
+                  </box>
+                  <Show
+                    when={isBig()}
+                    fallback={
+                      <text fg="#6c6c7c">{":"}</text>
+                    }
+                  >
+                    <box flexDirection="column">
+                      <text fg="#6c6c7c">{"   "}</text>
+                      <text fg="#6c6c7c">{" ▀ "}</text>
+                      <text fg="#6c6c7c">{" ▀ "}</text>
+                    </box>
+                  </Show>
+                  <box
+                    flexDirection="column"
+                    onMouseUp={() => !armed() && nudge("m", 1)}
+                    onMouseScroll={e => wheel(e, d => nudge("m", d))}
+                    onMouseOver={() => setHoverM(true)}
+                    onMouseOut={() => setHoverM(false)}
+                  >
+                    <For each={isBig() ? bigDigits(two(mm())) : [two(mm())]}>
+                      {line => (
+                        <text fg={!armed() && hoverM() ? DIGIT_HOVER : digitColor()}>
+                          <b>{line}</b>
+                        </text>
+                      )}
+                    </For>
+                  </box>
+                </box>
+                <Show
+                  when={isBig()}
+                  fallback={
+                    <box
+                      backgroundColor={hoverPill() ? pillHoverBg() : pillBg()}
+                      paddingX={1}
+                      onMouseUp={pillPress}
+                      onMouseOver={() => setHoverPill(true)}
+                      onMouseOut={() => setHoverPill(false)}
+                    >
+                      <text fg={pillColor()}>
+                        <b>{pillText()}</b>
+                      </text>
+                    </box>
+                  }
+                >
+                  <box
+                    flexDirection="column"
+                    width={pillW()}
+                    onMouseUp={pillPress}
+                    onMouseOver={() => setHoverPill(true)}
+                    onMouseOut={() => setHoverPill(false)}
+                  >
+                    <text fg={hoverPill() ? pillColor() : pillBg()}>{"▁".repeat(pillW())}</text>
+                    <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(pillText(), pillW())}</text>
+                    <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(countdown(), pillW())}</text>
+                    <text fg={hoverPill() ? pillColor() : pillBg()}>{"▔".repeat(pillW())}</text>
+                  </box>
+                </Show>
               </box>
+              <Show when={!isBig()}>
+                {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
+                <box paddingLeft={3}>
+                  <text fg={theme.text.muted}>{countdown()}</text>
+                </box>
+              </Show>
               <Show
-                when={isBig()}
+                when={armed()}
                 fallback={
-                  <text fg="#6c6c7c">{":"}</text>
+                  <box
+                    border
+                    borderStyle="rounded"
+                    borderColor={theme.text.muted}
+                    backgroundColor="#1c1c24"
+                    width={fieldW()}
+                    paddingX={1}
+                    flexDirection="row"
+                    justifyContent="space-between"
+                    onMouseUp={() => void editText()}
+                  >
+                    <text fg={theme.text.base}>{`✎ ${text()}`}</text>
+                    <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
+                      <text fg={GREEN}>{"⏎"}</text>
+                    </box>
+                  </box>
                 }
               >
-                <box flexDirection="column">
-                  <text fg="#6c6c7c">{"   "}</text>
-                  <text fg="#6c6c7c">{" ▀ "}</text>
-                  <text fg="#6c6c7c">{" ▀ "}</text>
+                <box
+                  border
+                  borderStyle="rounded"
+                  borderColor={theme.border.base}
+                  backgroundColor="#1c1c24"
+                  width={fieldW()}
+                  paddingX={1}
+                >
+                  <text fg={theme.text.muted}>{`✎ ${text()}`}</text>
                 </box>
               </Show>
-              <box
-                flexDirection="column"
-                onMouseUp={() => !armed() && nudge("m", 1)}
-                onMouseScroll={e => wheel(e, d => nudge("m", d))}
-                onMouseOver={() => setHoverM(true)}
-                onMouseOut={() => setHoverM(false)}
-              >
-                <For each={isBig() ? bigDigits(two(mm())) : [two(mm())]}>
-                  {line => (
-                    <text fg={!armed() && hoverM() ? DIGIT_HOVER : digitColor()}>
-                      <b>{line}</b>
-                    </text>
-                  )}
-                </For>
-              </box>
             </box>
-            <Show
-              when={isBig()}
-              fallback={
-                <box
-                  backgroundColor={hoverPill() ? pillHoverBg() : pillBg()}
-                  paddingX={1}
-                  onMouseUp={pillPress}
-                  onMouseOver={() => setHoverPill(true)}
-                  onMouseOut={() => setHoverPill(false)}
-                >
-                  <text fg={pillColor()}>
-                    <b>{pillText()}</b>
-                  </text>
-                </box>
-              }
-            >
-              <box
-                flexDirection="column"
-                width={pillW()}
-                onMouseUp={pillPress}
-                onMouseOver={() => setHoverPill(true)}
-                onMouseOut={() => setHoverPill(false)}
-              >
-                <text fg={hoverPill() ? pillColor() : pillBg()}>{"▁".repeat(pillW())}</text>
-                <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(pillText(), pillW())}</text>
-                <text fg={pillColor()} bg={hoverPill() ? pillHoverBg() : pillBg()}>{centre(countdown(), pillW())}</text>
-                <text fg={hoverPill() ? pillColor() : pillBg()}>{"▔".repeat(pillW())}</text>
-              </box>
-            </Show>
-          </box>
-          <Show when={!isBig()}>
-            {/* 3 cols = "⏰ ": countdown starts under the digits — 2026-10-30 */}
-            <box paddingLeft={3}>
-              <text fg={theme.text.muted}>{countdown()}</text>
+
+            {/* 13 + 3 + 11 + 10 = 37 with no gaps, as the Claude pane packs them; ↶ touches Sessions — 2026-11-05 */}
+            <box flexDirection="row">
+              <Card label="☰ Sessions" fg={PURPLE} width={p.sessionID ? 13 : undefined} onClick={() => keymap.dispatch("session.list")} />
+              <Card label="↶" fg={PURPLE} width={p.sessionID ? 3 : 5} onClick={() => void lastSession(p.sessionID)} />
+              <Show when={p.sessionID}>
+                <Card label="⇊ Compact" fg={BLUE} basis={11} onClick={() => keymap.dispatch("session.compact")} />
+                <Card label="⟲ Resume" fg={GREEN} basis={10} onClick={() => void send(sid(), RESUME_TEXT)} />
+              </Show>
             </box>
-          </Show>
-          <Show
-            when={armed()}
-            fallback={
+
+            <box>
               <box
                 border
                 borderStyle="rounded"
-                borderColor={theme.text.muted}
-                backgroundColor="#1c1c24"
-                width={fieldW()}
+                borderColor={CYAN}
+                title={` ${tr().model} `}
+                titleColor={theme.text.muted}
                 paddingX={1}
                 flexDirection="row"
                 justifyContent="space-between"
-                onMouseUp={() => void editText()}
+                onMouseUp={() => keymap.dispatch("model.list")}
               >
-                <text fg={theme.text.base}>{`✎ ${text()}`}</text>
-                <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
-                  <text fg={GREEN}>{"⏎"}</text>
-                </box>
+                <text fg={theme.text.base}>
+                  <b>{modelName()}</b>
+                </text>
+                <text fg={CYAN}>▾</text>
               </box>
-            }
-          >
-            <box
-              border
-              borderStyle="rounded"
-              borderColor={theme.border.base}
-              backgroundColor="#1c1c24"
-              width={fieldW()}
-              paddingX={1}
-            >
-              <text fg={theme.text.muted}>{`✎ ${text()}`}</text>
-            </box>
-          </Show>
-        </box>
-
-        <box flexDirection="row" gap={1}>
-          {/* opentui counts ☰ as 2 cells: 13 fits the label, the other 2 share the rest of 37 — 2026-10-11 */}
-          <Card label="☰ Sessions" fg={PURPLE} width={p.sessionID ? 13 : undefined} onClick={() => keymap.dispatch("session.list")} />
-          <Show when={p.sessionID}>
-            <Card label="⇊ Compact" fg={BLUE} onClick={() => keymap.dispatch("session.compact")} />
-            <Card label="⟲ Resume" fg={GREEN} onClick={() => void send(sid(), RESUME_TEXT)} />
-          </Show>
-        </box>
-
-        <box>
-          <box
-            border
-            borderStyle="rounded"
-            borderColor={CYAN}
-            title={` ${tr().model} `}
-            titleColor={theme.text.muted}
-            paddingX={1}
-            flexDirection="row"
-            justifyContent="space-between"
-            onMouseUp={() => keymap.dispatch("model.list")}
-          >
-            <text fg={theme.text.base}>
-              <b>{modelName()}</b>
-            </text>
-            <text fg={CYAN}>▾</text>
-          </box>
-          <Show when={variants().length > 0}>
-            <box
-              border
-              borderStyle="rounded"
-              borderColor={hue()}
-              title=" Effort "
-              titleColor={theme.text.muted}
-              bottomTitle={chord() ? ` ${chord()} ${tr().effortHint} ` : undefined}
-              bottomTitleAlignment="right"
-              paddingRight={1}
-              flexDirection="row"
-              justifyContent="space-between"
-              onMouseScroll={e => wheel(e, cycleVariant)}
-            >
-              <box flexDirection="row">
-                <box paddingX={1} onMouseUp={() => cycleVariant(-1)}>
-                  <text fg={theme.text.muted}>◀</text>
-                </box>
-                <box paddingX={1}>
-                  <text fg={hue()}>
-                    <b>{variant() ?? "default"}</b>
+              <Show when={variants().length > 0}>
+                <box
+                  border
+                  borderStyle="rounded"
+                  borderColor={hue()}
+                  title=" Effort "
+                  titleColor={theme.text.muted}
+                  bottomTitle={chord() ? ` ${chord()} ${tr().effortHint} ` : undefined}
+                  bottomTitleAlignment="right"
+                  paddingRight={1}
+                  flexDirection="row"
+                  justifyContent="space-between"
+                  onMouseScroll={e => wheel(e, cycleVariant)}
+                >
+                  <box flexDirection="row">
+                    <box paddingX={1} onMouseUp={() => cycleVariant(-1)}>
+                      <text fg={theme.text.muted}>◀</text>
+                    </box>
+                    <box paddingX={1}>
+                      <text fg={hue()}>
+                        <b>{variant() ?? "default"}</b>
+                      </text>
+                    </box>
+                    <box paddingX={1} onMouseUp={() => cycleVariant(1)}>
+                      <text fg={theme.text.muted}>▶</text>
+                    </box>
+                  </box>
+                  <text>
+                    <For each={variants()}>
+                      {(v, k) => {
+                        const step = effortStep(v)
+                        return <span style={{ fg: k() <= variants().indexOf(variant() ?? "") ? EFFORT_HUES[step] : theme.border.base }}>{EFFORT_BARS[step]}</span>
+                      }}
+                    </For>
                   </text>
                 </box>
-                <box paddingX={1} onMouseUp={() => cycleVariant(1)}>
-                  <text fg={theme.text.muted}>▶</text>
-                </box>
-              </box>
-              <text>
-                <For each={[...EFFORT_BARS]}>
-                  {(bar, k) => <span style={{ fg: k() <= effortStep(variant()) ? EFFORT_HUES[k()] : theme.border.base }}>{bar}</span>}
-                </For>
-              </text>
+              </Show>
             </box>
+
+            <Folder sessionID={p.sessionID} />
+
+            <Show when={agentCount() > 0}>
+              <box flexGrow={1} ref={r => (spacerEl = r)} />
+            </Show>
+
+            <Show when={p.sessionID}>{sid => <Subagents sessionID={sid()} onCount={setAgentCount} />}</Show>
           </Show>
-        </box>
-
-        <Folder sessionID={p.sessionID} />
-
-        <Show when={agentCount() > 0}>
-          <box flexGrow={1} ref={r => (spacerEl = r)} />
         </Show>
+      </box>
+    )
+  }
 
-        <Show when={p.sessionID}>{sid => <Subagents sessionID={sid()} onCount={setAgentCount} />}</Show>
+  // the dance takes the panel's own size: the banner is drawn into the scene so the blast covers it — 2026-11-05
+  function Stage(p: { width: number; height: number }) {
+    const rows = createMemo(() => danceRows(p.width, p.height))
+    return (
+      <box backgroundColor="#000000" height={p.height}>
+        <Index each={rows()}>
+          {line => (
+            <text>
+              <Index each={line()}>{run => <span style={{ fg: run().fg, bg: run().bg }}>{run().text}</span>}</Index>
+            </text>
+          )}
+        </Index>
+      </box>
+    )
+  }
+
+  function Settings() {
+    const row = (label: () => string, value: () => boolean, flip: () => void) => {
+      const [lit, setLit] = createSignal(false)
+      return (
+        <box
+          flexDirection="row"
+          justifyContent="space-between"
+          paddingX={1}
+          backgroundColor={lit() ? ROW_LIT : undefined}
+          onMouseUp={flip}
+          onMouseOver={() => setLit(true)}
+          onMouseOut={() => setLit(false)}
+        >
+          <text fg={value() ? GREEN : theme.text.muted}>{label()}</text>
+          <text fg={value() ? GREEN : theme.text.muted}>{value() ? `● ${tr().on}` : `○ ${tr().off}`}</text>
+        </box>
+      )
+    }
+    const [backLit, setBackLit] = createSignal(false)
+    return (
+      <box border borderStyle="rounded" borderColor={theme.border.base} title={` ${tr().settings} `} titleColor={theme.text.muted}>
+        {row(() => tr().setUpdateNotify, () => prefs.updateNotify, () => void setPrefs(d => void (d.updateNotify = !d.updateNotify)))}
+        {row(() => tr().setSilentUpdate, () => prefs.silentUpdate, () => void setPrefs(d => void (d.silentUpdate = !d.silentUpdate)))}
+        <box
+          paddingX={1}
+          backgroundColor={backLit() ? ROW_LIT : undefined}
+          onMouseUp={() => setShowSettings(false)}
+          onMouseOver={() => setBackLit(true)}
+          onMouseOut={() => setBackLit(false)}
+        >
+          <text fg={theme.text.muted}>{tr().back}</text>
+        </box>
       </box>
     )
   }
@@ -1023,6 +1227,7 @@ function setup(context: Ctx) {
   ]
   return () => {
     clearInterval(every)
+    if (danceTimer) clearInterval(danceTimer)
     for (const release of releases) release()
   }
 }

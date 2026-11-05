@@ -24,12 +24,29 @@ copy_part() {
   else
     curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$REPO/contents/$from?ref=main" -o "$to.tmp"
   fi
-  [ -s "$to.tmp" ] || { echo "$from is empty" >&2; exit 1; }
+  [ -s "$to.tmp" ] || { rm -f "$to.tmp"; echo "$from is empty" >&2; exit 1; }
   mv -f "$to.tmp" "$to"
+}
+trap 'rm -f "$OC_DIR"/*.tmp "$PI_EXT_DIR"/*.tmp "$SETTINGS.tmp" 2>/dev/null || true' EXIT
+
+# where the installed marketplace points: "github:owner/repo", "directory:/path", or empty — 2026-11-05
+market_source() {
+  local js
+  js="$(claude plugin marketplace list --json 2>/dev/null || true)"
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$js" | python3 -c 'import json,sys
+try: ms=json.load(sys.stdin)
+except Exception: ms=[]
+m=[x for x in ms if x.get("name")==sys.argv[1]]
+print("" if not m else m[0].get("source","")+":"+(m[0].get("repo") or m[0].get("path") or ""))' "$MARKET"
+  elif command -v node >/dev/null 2>&1; then
+    printf '%s' "$js" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let ms=[];try{ms=JSON.parse(s)}catch{};const m=ms.find(x=>x.name===process.argv[1]);console.log(m?`${m.source}:${m.repo||m.path||""}`:"")})' "$MARKET"
+  fi
 }
 
 install_opencode() {
   mkdir -p "$OC_DIR"
+  copy_part plugin/hooks/dance.ts "$OC_DIR/dance.ts"
   copy_part opencode/tui.tsx "$OC_DIR/tui.tsx"
   copy_part plugin/.claude-plugin/plugin.json "$OC_DIR/plugin.json"
 }
@@ -49,6 +66,8 @@ exists = os.path.exists(path)
 if not exists and on != "1":
     sys.exit(0)
 cfg = json.load(open(path, encoding="utf-8")) if exists else {}
+if on != "1" and not cfg.get("extraKnownMarketplaces"):
+    sys.exit(0)
 known = cfg.setdefault("extraKnownMarketplaces", {})
 if on == "1":
     known[market] = {"source": {"source": "github", "repo": repo}, "autoUpdate": True}
@@ -98,14 +117,16 @@ JS
 }
 
 # the mod was called prompt-bar before the rename, ClauDiscombobulating until 1.1.7 — 2026-10-11
-for old in "$PLUGIN" ClauDiscombobulating@ClauDiscombobulating prompt-bar@prompt-bar prompt-bar@prompt-bar-local; do
+for old in ClauDiscombobulating@ClauDiscombobulating prompt-bar@prompt-bar prompt-bar@prompt-bar-local; do
   claude plugin uninstall "$old" --scope user >/dev/null 2>&1 || true
 done
-for old in "$MARKET" ClauDiscombobulating prompt-bar prompt-bar-local; do
+for old in ClauDiscombobulating prompt-bar prompt-bar-local; do
   claude plugin marketplace remove "$old" >/dev/null 2>&1 || true
 done
 
 if [ "${1:-}" = "--uninstall" ]; then
+  claude plugin uninstall "$PLUGIN" --scope user >/dev/null 2>&1 || true
+  claude plugin marketplace remove "$MARKET" >/dev/null 2>&1 || true
   set_autoupdate 0
   rm -rf "$OC_DIR"
   rm -rf "$PI_EXT_DIR"
@@ -119,7 +140,26 @@ with_opencode=0
 with_pi=0
 { command -v pi >/dev/null 2>&1 || [ -d "$PI_BASE" ]; } && with_pi=1
 
-claude plugin marketplace add "$REPO"
+# the installed copy goes only after the new source is fetched: no network must not leave you with no mod — 2026-11-05
+had="$(market_source)"
+if [ "$had" = "github:$REPO" ]; then
+  claude plugin marketplace update "$MARKET" || { echo "Could not update the marketplace; the installed copy is kept." >&2; exit 1; }
+else
+  # removing the marketplace uninstalls the plugin too: reach GitHub first — 2026-11-05
+  if [ -n "$had" ] && ! git ls-remote --heads "https://github.com/$REPO" >/dev/null 2>&1 && ! curl -fsS "https://api.github.com/repos/$REPO" >/dev/null 2>&1; then
+    echo "GitHub ($REPO) is out of reach; the installed copy is kept." >&2
+    exit 1
+  fi
+  [ -n "$had" ] && claude plugin marketplace remove "$MARKET" >/dev/null 2>&1
+  if ! claude plugin marketplace add "$REPO"; then
+    case "$had" in
+      github:* | directory:*) claude plugin marketplace add "${had#*:}" >/dev/null 2>&1 && claude plugin install "$PLUGIN" --scope user >/dev/null 2>&1 || true ;;
+    esac
+    echo "Could not add $REPO; the previous install was put back where possible." >&2
+    exit 1
+  fi
+fi
+claude plugin uninstall "$PLUGIN" --scope user >/dev/null 2>&1 || true
 claude plugin install "$PLUGIN" --scope user
 set_autoupdate 1
 [ "$with_opencode" = 1 ] && install_opencode

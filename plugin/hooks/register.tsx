@@ -296,7 +296,7 @@ async function note($: EngineInterface, line: string) {
   await update($, log, l => [...l.slice(-29), `${t} ${line}`])
   try {
     const home = await homeDir($)
-    if (home) await $.fs.write(`${home}/.claude/mods/ClauDiscobombulating-debug.log`, (await read($, log)).join(String.fromCharCode(10)))
+    if (home) await $.fs.write(`${await configDir($)}/mods/ClauDiscobombulating-debug.log`, (await read($, log)).join(String.fromCharCode(10)))
   } catch {}
 }
 
@@ -494,8 +494,12 @@ function doneLook(frame: number) {
 const CLI_NAMES = 'opencode|claude|codex|gemini|agy|antigravity|qwen|crush|goose|pi|aider|cursor-agent|amp|kimi|droid|copilot|kiro-cli|auggie|kilocode|cline|cn|openhands|ollama|lms|command-code|commandcode|cmdc|caveman|mods|aichat|llm'
 // `-cli`/`-ai`/`-code` tail = npx package names: `npx @google/gemini-cli -p`, `npx opencode-ai run` — 2026-11-02
 const CLI_EXT = '(?:-(?:ai|cli|code|agent))?(?:\\.exe|\\.cmd|\\.bat|\\.ps1|\\.js|\\.mjs)?'
+// short names (pi, amp, cn…) are also folder and file names: only at a command's start, not as an argument — 2026-11-05
+const SHORT_NAMES = 'pi|cn|amp|agy|llm|lms|mods|cmdc'
+const LONG_NAMES = CLI_NAMES.split('|').filter(n => !SHORT_NAMES.split('|').includes(n)).join('|')
 // a box without the CLI on PATH calls it by full path: `~/.opencode/bin/opencode run` — 2026-10-29
-const AGENT_CLI = new RegExp(`(?:^|[\\s;&|(])(?:\\S*[\\\\/])?(${CLI_NAMES})${CLI_EXT}(?:\\s+(?:run|exec|e|chat|ask|task)\\b|[^;&|\\n]*?\\s(?:-p|--print|--prompt|-x|--execute|-t|--text|--task|-e|--message|--message-file|-m|--model)\\b)`, 'i')
+const CMD_START = '(?:^\\s*|[;&|(]\\s*|(?:^|\\s)(?:npx|bunx|pnpx|exec|nohup|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)'
+const AGENT_CLI = new RegExp(`(?:(?:^|[\\s;&|(])(?:\\S*[\\\\/])?(${LONG_NAMES})|${CMD_START}(?:\\S*[\\\\/])?(${SHORT_NAMES}))${CLI_EXT}(?:\\s+(?:run|exec|e|chat|ask|task)\\b|[^;&|\\n]*?\\s(?:-p|--print|--prompt|-x|--execute|-t|--text|--task|-e|--message|--message-file|-m|--model)\\b)`, 'i')
 const CLI_PROG = new RegExp(`^(?:.*[\\\\/])?(${CLI_NAMES})${CLI_EXT}$`, 'i')
 const CLI_MODEL = /\s(?:-m|--model)[\s=]+(\S+)|\s-c\s+model=(\S+)|\b(?:ollama\s+run|lms\s+chat)\s+(?!-)(\S+)/
 const CLI_EFFORT = /\s--(?:effort|thinking|think|variant|reasoning-effort|reasoning)[\s=]+(\w+)|model_reasoning_effort=["']?(\w+)/
@@ -519,13 +523,14 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
   const strip = (text: string): string =>
     text.replace(QUOTED, (q, at: number, all: string) => {
       const inner = q.slice(1, -1)
-      if (SHELL_RUN.test(all.slice(0, at))) return ` ${strip(inner.replace(/\\(["\\])/g, '$1'))} `
+      // `;` around it: the quoted text starts a command of its own — 2026-11-05
+      if (SHELL_RUN.test(all.slice(0, at))) return ` ; ${strip(inner.replace(/\\(["\\])/g, '$1'))} `
       // but a quoted program path is the command itself: `& "C:\…\opencode.exe" run` — 2026-10-29
       return CLI_PROG.test(inner) ? inner : `\u0000${quoted.push(inner) - 1}\u0000`
     })
   const bare = strip(command.replace(HEREDOC, ''))
   const hit = AGENT_CLI.exec(bare)
-  const cli = hit?.[1]?.toLowerCase()
+  const cli = (hit?.[1] ?? hit?.[2])?.toLowerCase()
   if (!cli || (detached && !DETACH.test(bare))) return
   const unq = (s: string) => s.replace(/\u0000(\d+)\u0000/g, (_, k) => quoted[Number(k)] ?? '')
   const vars: Record<string, string> = {}
@@ -658,23 +663,39 @@ async function taskOutput($: EngineInterface, id: string) {
 
 let tailAt = 0
 let tailing = false
+// a log is read again only when its size or mtime moved; a missing task output is looked for every 15 s — 2026-11-05
+const tailSeen = new Map<string, string>()
+const outputTried = new Map<string, number>()
+const OUTPUT_RETRY_MS = 15000
 async function tailShells($: EngineInterface) {
   const now = await $.clock.now()
   if (tailing || now - tailAt < TAIL_MS) return
   tailAt = now
   tailing = true
   try {
-    for (const [id, a] of Object.entries(await read($, agents))) {
-      if (!a.cli || a.done) continue
-      const log = a.log || (await taskOutput($, id).catch(() => ''))
-      if (!log) continue
-      if (a.detached) {
-        const stat = await $.fs.stat(log).catch(() => undefined)
-        if (stat && now - stat.mtimeMs >= DETACHED_IDLE_MS && now - (a.born ?? 0) >= DETACHED_IDLE_MS) {
-          await finishAgent($, id)
-          continue
-        }
+    const all = await read($, agents)
+    for (const id of [...tailSeen.keys(), ...outputTried.keys()]) {
+      if (!all[id]) {
+        tailSeen.delete(id)
+        outputTried.delete(id)
       }
+    }
+    for (const [id, a] of Object.entries(all)) {
+      if (!a.cli || a.done) continue
+      let log = a.log
+      if (!log && now - (outputTried.get(id) ?? 0) >= OUTPUT_RETRY_MS) {
+        outputTried.set(id, now)
+        log = await taskOutput($, id).catch(() => '')
+      }
+      if (!log) continue
+      const stat = await $.fs.stat(log).catch(() => undefined)
+      if (a.detached && stat && now - stat.mtimeMs >= DETACHED_IDLE_MS && now - (a.born ?? 0) >= DETACHED_IDLE_MS) {
+        await finishAgent($, id)
+        continue
+      }
+      const stamp = stat ? `${log}|${stat.size}|${stat.mtimeMs}` : ''
+      if (stamp && tailSeen.get(id) === stamp && log === a.log) continue
+      if (stamp) tailSeen.set(id, stamp)
       const text = await $.fs.read(log).catch(() => '')
       const got = lastLine(text)
       const line = got.line || a.line
@@ -1075,7 +1096,7 @@ async function poll($: EngineInterface) {
     const quiet = await alertQuiet($)
     if (!quiet && left > 0 && left <= ALERT_MIN && (await read($, alerted)) !== lastActive) {
       await update($, alerted, () => lastActive)
-      void alertCache($)
+      void alertCache($).catch(() => undefined)
     }
     await adoptShared($).catch(() => undefined)
     await resync($).catch(() => undefined)
@@ -1140,14 +1161,25 @@ async function poll($: EngineInterface) {
     }
     if (nextLive !== cur) await update($, live, () => nextLive)
   } catch (err) {
-    await note($, `poll failed ${String(err)}`)
+    // a lasting failure would rewrite the log every second: same text at most once a minute — 2026-11-05
+    const msg = String(err)
+    const at = Date.now()
+    if (msg !== pollErr || at - pollErrAt >= 60000) {
+      pollErr = msg
+      pollErrAt = at
+      await note($, `poll failed ${msg}`)
+    }
   } finally {
     polling = false
   }
 }
 
 let isFull = false
+let pollErr = ''
+let pollErrAt = 0
 let sharedAt = 0
+let sharedStamp = ''
+let sharedCache: Shared | undefined
 let lastActive = 0
 let isBusy = false
 let isCompacting = false
@@ -1160,8 +1192,9 @@ type Shared = { at: number; limits: Limit[] }
 
 // each session hears only its own API replies; the store carries the freshest to the rest — 2026-10-02
 async function sharedPath($: EngineInterface) {
+  // CLAUDE_CONFIG_DIR wins, as for keybindings and projects — 2026-11-05
   const home = await homeDir($)
-  return home ? `${home}/.claude/mods/ClauDiscobombulating-limits.json` : undefined
+  return home ? `${await configDir($)}/mods/ClauDiscobombulating-limits.json` : undefined
 }
 
 async function shareLimits($: EngineInterface, ls: Limit[]) {
@@ -1173,9 +1206,17 @@ async function shareLimits($: EngineInterface, ls: Limit[]) {
 async function adoptShared($: EngineInterface) {
   const path = await sharedPath($)
   if (!path) return
+  // parsed again only when the file's mtime moved: poll runs every second — 2026-11-05
   let v: Shared | undefined
   try {
-    v = JSON.parse(await $.fs.read(path)) as Shared
+    const stat = await $.fs.stat(path).catch(() => undefined)
+    const stamp = stat ? `${path}|${stat.size}|${stat.mtimeMs}` : ''
+    if (stamp && stamp === sharedStamp && sharedCache) v = sharedCache
+    else {
+      v = JSON.parse(await $.fs.read(path)) as Shared
+      sharedStamp = stamp
+      sharedCache = v
+    }
   } catch {
     return
   }
@@ -1407,7 +1448,8 @@ async function posixHelper($: EngineInterface, cwd: string, id: string) {
   const run = cmd.map(shq).join(' ')
   let open: string
   if (macTerm) {
-    const as = `tell application "Terminal" to do script "cd ${cwd.replace(/["\\]/g, '\\$&')} && ${run.replace(/["\\]/g, '\\$&')}"`
+    // shell-quoted first (a space in the path), then escaped for the AppleScript string — 2026-11-05
+    const as = `tell application "Terminal" to do script "${`cd ${shq(cwd)} && ${run}`.replace(/["\\]/g, '\\$&')}"`
     open = `osascript -e ${shq(as)} -e 'tell application "Terminal" to activate'`
   } else {
     const win = newWindow(term, cwd, cmd, isInShell)

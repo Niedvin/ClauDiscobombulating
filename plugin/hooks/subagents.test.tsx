@@ -127,6 +127,68 @@ test('pane: an agent CLI reached by path or quoted path still gets a row', { tim
   expect(await text()).toContain('"max"')
 })
 
+test('pane: a short CLI name gets a row only where a command starts, not as a folder argument', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let n = 0
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('tool.call', () => ({ result: { backgroundTaskId: `bg${++n}` } }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE_PROPS })
+  const text = async () => JSON.stringify(await pane.drawn())
+
+  await toolCall($, { tool: 'Bash', command: 'ls ~/projects/amp -t' })
+  await toolCall($, { tool: 'Bash', command: 'tail -f ~/work/pi -e x' })
+  await clock.advance(400)
+  expect(await text()).not.toContain('Субагенти')
+
+  await toolCall($, { tool: 'Bash', command: "bash -lc 'pi --model anthropic/claude-sonnet-5-5:high -p \"audit\"'" })
+  await clock.advance(400)
+  expect(await text()).toContain('Субагенти')
+  expect(await text()).toContain('claude-sonnet-5-5')
+})
+
+test('pane: a log is read again only when its size or mtime moved', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const log = { text: '$ ls\nfirst-line\n', mtimeMs: 1, reads: 0 }
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1 }, rateLimits: [] } }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CLAUDISCOBOMBULATING_LANG' ? 'uk' : undefined }))
+  on('tool.register', (_$, e) => ({ value: { tool: e.name } }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('tool.call', () => ({ result: { backgroundTaskId: 'bg1' } }))
+  on('fs.read', (_$: any, e: any, next: any) => (e.path === '/work/run.log' ? (log.reads++, { value: log.text }) : next(e)))
+  on('fs.stat', (_$: any, e: any, next: any) => (e.path === '/work/run.log' ? { value: { kind: 'file', size: log.text.length, mtimeMs: log.mtimeMs } } : next(e)))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE_PROPS })
+  const text = async () => JSON.stringify(await pane.drawn())
+
+  await toolCall($, { tool: 'Bash', command: 'opencode run -m "opencode-go/kimi-k2" "audit" > /work/run.log' })
+  await clock.advance(4000)
+  expect(await text()).toContain('first-line')
+  const reads = log.reads
+  await clock.advance(7000)
+  expect(log.reads).toBe(reads)
+
+  log.text += 'second-line\n'
+  log.mtimeMs = 2
+  await clock.advance(4000)
+  expect(await text()).toContain('second-line')
+})
+
 test('pane: the row tails the redirect after the CLI, under a quoted cd', { timeoutMs: 20000 }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   const norm = (p: string) => p.replace(/\\/g, '/')

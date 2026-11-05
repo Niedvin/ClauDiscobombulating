@@ -271,10 +271,18 @@ export function danceCells(W: number, rows: number, t: number, word = 'BOOM!', h
   const mid = Math.floor(W / 2)
   const te = t - BOOM_AT
   const g = new Uint32Array(W * rows * 3)
-  for (let i = 0; i < W * rows; i++) g.set([SPACE, DEF, DEF], i * 3)
+  for (let i = 0; i < W * rows * 3; i += 3) {
+    g[i] = SPACE
+    g[i + 1] = DEF
+    g[i + 2] = DEF
+  }
   const isFree = (c: number, r: number) => c >= 0 && c < W && r >= top && r < H - 2 && g[(r * W + c) * 3] === SPACE
   const set = (c: number, r: number, cp: number, fg: number, bg = DEF) => {
-    if (c >= 0 && c < W && r >= 0 && r < H) g.set([cp, fg, bg], (r * W + c) * 3)
+    if (c < 0 || c >= W || r < 0 || r >= H) return
+    const i = (r * W + c) * 3
+    g[i] = cp
+    g[i + 1] = fg
+    g[i + 2] = bg
   }
   if (head) drawHead(set, W, head)
 

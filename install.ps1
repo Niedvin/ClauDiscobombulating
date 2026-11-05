@@ -82,14 +82,19 @@ function Copy-Part([string]$Src, [string]$From, [string]$To) {
   $tmp = "$To.tmp"
   if ($Src) { Copy-Item (Join-Path $Src $From) $tmp }
   else { Invoke-WebRequest "https://api.github.com/repos/$Repo/contents/$($From)?ref=main" -Headers @{ Accept = 'application/vnd.github.raw' } -OutFile $tmp -UseBasicParsing }
-  if ((Get-Item $tmp).Length -eq 0) { throw "$From is empty" }
-  Move-Item $tmp $To -Force
+  try {
+    if ((Get-Item $tmp).Length -eq 0) { throw "$From is empty" }
+    Move-Item $tmp $To -Force
+  } finally {
+    if (Test-Path $tmp) { Remove-Item -Force $tmp }
+  }
 }
 
 function Install-OpenCode {
   if (-not $PSCmdlet.ShouldProcess($OcDir, 'install opencode plugin')) { return }
   $src = Get-Source 'opencode/tui.tsx'
   New-Item -ItemType Directory -Force $OcDir | Out-Null
+  Copy-Part $src 'plugin/hooks/dance.ts' (Join-Path $OcDir 'dance.ts')
   Copy-Part $src 'opencode/tui.tsx' (Join-Path $OcDir 'tui.tsx')
   Copy-Part $src 'plugin/.claude-plugin/plugin.json' (Join-Path $OcDir 'plugin.json')
 }
@@ -102,7 +107,8 @@ function Install-Pi {
 }
 
 $markets = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json)
-$hasMarket = [bool]($markets | Where-Object { $_.name -eq $Market })
+$market = $markets | Where-Object { $_.name -eq $Market } | Select-Object -First 1
+$hasMarket = [bool]$market
 $plugins = (& claude plugin list --json 2>$null | ConvertFrom-Json)
 $hasPlugin = [bool]($plugins | Where-Object { $_.id -eq $Plugin })
 # the mod was called prompt-bar before the rename — 2026-10-06
@@ -125,9 +131,29 @@ if (-not $hasLocal -and -not $Repo) { throw "plugin folder missing in $Root" }
 if ($hasLocal) { Invoke-Claude @('plugin', 'validate', (Join-Path $Root 'plugin')) }
 foreach ($id in $legacyPlugins) { Invoke-Claude @('plugin', 'uninstall', $id, '--scope', 'user') }
 foreach ($name in $legacyMarkets) { Invoke-Claude @('plugin', 'marketplace', 'remove', $name) }
-if ($hasPlugin) { Invoke-Claude @('plugin', 'uninstall', $Plugin, '--scope', 'user') }
-if ($hasMarket) { Invoke-Claude @('plugin', 'marketplace', 'remove', $Market) }
-Invoke-Claude @('plugin', 'marketplace', 'add', $(if ($Repo) { $Repo } else { $Root }))
+# the installed copy goes only after the new source is fetched: no network must not leave you with no mod — 2026-11-05
+$want = if ($Repo) { $Repo } else { $Root }
+$sameSource = $hasMarket -and $(if ($Repo) { $market.source -eq 'github' -and $market.repo -eq $Repo } else { $market.source -eq 'directory' -and $market.path -and ([IO.Path]::GetFullPath($market.path).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')) })
+if ($sameSource) {
+  try { Invoke-Claude @('plugin', 'marketplace', 'update', $Market) } catch { throw "Could not update the marketplace; the installed copy is kept. $_" }
+} else {
+  # removing the marketplace uninstalls the plugin too: reach GitHub first — 2026-11-05
+  if ($hasMarket -and $Repo) {
+    try { Invoke-WebRequest "https://api.github.com/repos/$Repo" -UseBasicParsing -Method Head | Out-Null } catch { throw "GitHub ($Repo) is out of reach; the installed copy is kept." }
+  }
+  if ($hasMarket) { Invoke-Claude @('plugin', 'marketplace', 'remove', $Market) }
+  try {
+    Invoke-Claude @('plugin', 'marketplace', 'add', $want)
+  } catch {
+    $old = if ($market.source -eq 'github') { $market.repo } else { $market.path }
+    if ($old) {
+      & claude plugin marketplace add $old 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0 -and $hasPlugin) { & claude plugin install $Plugin --scope user 2>$null | Out-Null }
+    }
+    throw "Could not add $want; the previous install was put back where possible. $_"
+  }
+}
+if ($hasPlugin) { try { Invoke-Claude @('plugin', 'uninstall', $Plugin, '--scope', 'user') } catch { Write-Host "uninstall skipped: $_" } }
 Invoke-Claude @('plugin', 'install', $Plugin, '--scope', 'user')
 # a local-folder install has no remote to pull from — 2026-10-06
 if ($Repo) { Set-AutoUpdate $true $Repo }
