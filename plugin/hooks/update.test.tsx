@@ -37,6 +37,7 @@ async function setup($: any, on: any) {
   })
   on('process.run', (_$: any, e: any) => {
     runs.push([...e.argv])
+    if (e.argv.join(' ').includes('plugin update')) return { value: { exitCode: 0, stdout: '{"newVersion":"99.0.0"}\n', stderr: '' } }
     const script = e.argv[2] ?? ''
     const out =
       script === 'echo $PPID' ? '4242\n'

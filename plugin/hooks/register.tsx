@@ -128,6 +128,7 @@ const UK = {
   updateDone: (v: string) => `Оновлено до v${v}. Перезапусти сесію.`,
   updateHint: (v: string) => `✦ v${v} — натисніть, щоб оновити`,
   updating: (v: string) => `Оновлюю до v${v}…`,
+  updateStale: (v: string) => `Джерело ще на v${v} — оновлення скасовано`,
   restarting: 'Оновлено. Перезапускаю сесію…',
   updateFailed: 'Оновлення не вдалося',
   upToDate: (v: string) => `v${v} — остання версія`,
@@ -181,6 +182,7 @@ const EN: typeof UK = {
   updateDone: (v: string) => `Updated to v${v}. Restart the session.`,
   updateHint: (v: string) => `✦ v${v} — click to update`,
   updating: (v: string) => `Updating to v${v}…`,
+  updateStale: (v: string) => `Source is still v${v} — update cancelled`,
   restarting: 'Updated. Restarting the session…',
   updateFailed: 'Update failed',
   upToDate: (v: string) => `v${v} is the latest`,
@@ -565,9 +567,21 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
     if (!/^([a-zA-Z]:)?[\\/]/.test(log) && cd) log = `${unq(cd).replace(/^\/([a-zA-Z])\//, (_, d: string) => `${d.toUpperCase()}:/`)}/${log}`
   }
   if (detached && !log) return
-  const model = path ? (path.split('/').pop() ?? path) : ''
   const born = await $.clock.now()
-  await update($, agents, a => ({ ...a, [id]: { model, effort, line: `✧ ${tr.subStart}`, cli, log, born, ...(detached ? { detached } : {}) } }))
+  let model = path ? (path.split('/').pop() ?? path) : ''
+  // the log's last line shows at once, not after the 3 s tail tick — 2026-11-06
+  let line = `✧ ${tr.subStart}`
+  if (log) {
+    const text = await $.fs.read(log).catch(() => '')
+    if (text) {
+      const got = lastLine(text)
+      if (got.line) line = got.line
+      model ||= got.model
+    }
+    const stat = await $.fs.stat(log).catch(() => undefined)
+    if (stat) tailSeen.set(id, `${born}|${log}|${stat.size}|${stat.mtimeMs}`)
+  }
+  await update($, agents, a => ({ ...a, [id]: { model, effort, line, cli, log, born, ...(detached ? { detached } : {}) } }))
   kickGrow($)
 }
 
@@ -693,7 +707,7 @@ async function tailShells($: EngineInterface) {
         await finishAgent($, id)
         continue
       }
-      const stamp = stat ? `${log}|${stat.size}|${stat.mtimeMs}` : ''
+      const stamp = stat ? `${a.born ?? 0}|${log}|${stat.size}|${stat.mtimeMs}` : ''
       if (stamp && tailSeen.get(id) === stamp && log === a.log) continue
       if (stamp) tailSeen.set(id, stamp)
       const text = await $.fs.read(log).catch(() => '')
@@ -1367,7 +1381,8 @@ async function checkVersion($: EngineInterface) {
   const r = await $.http.fetch(`https://raw.githubusercontent.com/${repo}/main/plugin/.claude-plugin/plugin.json`)
   if (!r.ok) return
   const m = JSON.parse(r.text) as { version?: unknown }
-  if (typeof m.version === 'string' && newerThan(m.version, pluginVersion)) {
+  if (typeof m.version !== 'string') return
+  if (newerThan(m.version, pluginVersion)) {
     latestSeen = m.version
     await update($, latest, () => m.version)
     // silent update wins over both notifications, once per found version — 2026-11-03
@@ -1375,6 +1390,10 @@ async function checkVersion($: EngineInterface) {
       silentFor = m.version
       void doUpdate($, true)
     }
+  } else if (latestSeen) {
+    // a version pulled back from main must not stay offered — 2026-11-06
+    latestSeen = ''
+    await update($, latest, () => '')
   }
 }
 
@@ -1388,19 +1407,74 @@ async function recheckVersion($: EngineInterface) {
   }
 }
 
+type MarketEntry = { source?: { source?: string; path?: string; repo?: string }; installLocation?: string }
+
+async function marketEntry($: EngineInterface) {
+  try {
+    const file = `${await configDir($)}/plugins/known_marketplaces.json`
+    const all = JSON.parse(await $.fs.read(file)) as Record<string, MarketEntry>
+    return all[PANE]
+  } catch {
+    return undefined
+  }
+}
+
+async function sourceVersion($: EngineInterface, loc: string) {
+  for (const p of [`${loc}/plugin/.claude-plugin/plugin.json`, `${loc}/.claude-plugin/plugin.json`]) {
+    try {
+      const m = JSON.parse(await $.fs.read(p)) as { version?: unknown }
+      if (typeof m.version === 'string' && m.version) return m.version
+    } catch {}
+  }
+  return ''
+}
+
+// claude is a .cmd shim on some Windows installs, which argv alone cannot start — 2026-11-06
+async function claudeCli($: EngineInterface, args: string[]) {
+  const os = await $.env.get('OS').catch(() => undefined)
+  return await $.process.run(os === 'Windows_NT' ? ['cmd.exe', '/c', `claude ${args.join(' ')}`] : ['claude', ...args], { timeoutMs: 180000 })
+}
+
 async function doUpdate($: EngineInterface, quiet = false) {
   try {
     const v = await read($, latest)
     if (!quiet) $.ui.toast(tr.updating(v))
-    const args = ['plugin', 'update', `${PANE}@${PANE}`, '--scope', 'user']
-    const os = await $.env.get('OS').catch(() => undefined)
-    const argv = os === 'Windows_NT' ? ['cmd.exe', '/c', `claude ${args.join(' ')}`] : ['claude', ...args]
-    await $.process.run(argv, { timeoutMs: 180000 })
+    const market = await marketEntry($)
+    const loc = market?.installLocation
+    // a directory marketplace is a working clone: `marketplace update` re-reads it, never pulls it — 2026-11-06
+    if (market?.source?.source === 'directory' && loc) {
+      const pull = await $.process.run(['git', '-C', loc, 'pull', '--ff-only'], { timeoutMs: 90000 }).catch(() => undefined)
+      await note($, `git pull ${pull ? `→ ${pull.exitCode}` : 'failed'}`)
+    }
+    const refreshed = await claudeCli($, ['plugin', 'marketplace', 'update', PANE]).catch(() => undefined)
+    if (!refreshed || refreshed.exitCode !== 0) {
+      await note($, `marketplace update failed ${refreshed?.stderr.trim().slice(0, 160) ?? ''}`)
+      if (!quiet) $.ui.toast(tr.updateFailed)
+      return
+    }
+    const src = loc ? await sourceVersion($, loc) : ''
+    // updating to the running version rewrites the plugin's own dir and unloads it mid-session — 2026-11-06
+    if (src && !newerThan(src, pluginVersion)) {
+      await note($, `update skipped: source v${src}, running v${pluginVersion}`)
+      if (!quiet) $.ui.toast(tr.updateStale(src))
+      return
+    }
+    const r = await claudeCli($, ['plugin', 'update', `${PANE}@${PANE}`, '--scope', 'user', '--json', '-y'])
+    let got = ''
+    try {
+      const last = r.stdout.trim().split('\n').filter(Boolean).pop() ?? ''
+      got = String((JSON.parse(last) as { newVersion?: unknown }).newVersion ?? '')
+    } catch {}
+    if (r.exitCode !== 0 || !got || !newerThan(got, pluginVersion)) {
+      await note($, `plugin update failed ${r.exitCode} ${r.stderr.trim().slice(0, 160)}`)
+      if (!quiet) $.ui.toast(tr.updateFailed)
+      return
+    }
     latestSeen = ''
     await update($, latest, () => '')
     if (quiet) return
     if (await relaunch($).catch(err => note($, `relaunch failed ${String(err)}`).then(() => false))) return
-    $.ui.toast(tr.updateDone(v))
+    $.ui.toast(tr.updateDone(got))
   } catch (err) {
     if (!quiet) $.ui.toast(tr.updateFailed)
     await note($, `update failed ${String(err)}`)
@@ -1769,6 +1843,11 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
     await loadPrefs($).catch(err => note($, `prefs failed ${String(err)}`))
     // subagents die with the process: anything the store kept is a ghost — 2026-10-15
     await update($, agents, () => ({})).catch(() => undefined)
+    tailSeen.clear()
+    outputTried.clear()
+    tailAt = 0
+    tailing = false
+    polling = false
     pollEvery?.cancel()
     pollEvery = $.clock.every(1000, () => void poll($))
     try {
