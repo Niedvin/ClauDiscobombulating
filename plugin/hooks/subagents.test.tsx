@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 const PANE_PROPS = { title: 't', isFocused: false, bodyColumns: 38, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as const
+const clean = (p: unknown) => String(p).replace(/\\/g, '/')
 const USAGE = { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 5, model: 'claude-opus-5-5' }
 // the call's types leave agentId out; the engine takes it riding along — 2026-10-15
 const toolCall = ($: any, input: Record<string, unknown>) => $.tool.call(input) as Promise<unknown>
@@ -170,8 +171,8 @@ test('pane: a log is read again only when its size or mtime moved', { timeoutMs:
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('agent.list', () => ({ value: [] }))
   on('tool.call', () => ({ result: { backgroundTaskId: 'bg1' } }))
-  on('fs.read', (_$: any, e: any, next: any) => (e.path === '/work/run.log' ? (log.reads++, { value: log.text }) : next(e)))
-  on('fs.stat', (_$: any, e: any, next: any) => (e.path === '/work/run.log' ? { value: { kind: 'file', size: log.text.length, mtimeMs: log.mtimeMs } } : next(e)))
+  on('fs.read', (_$: any, e: any, next: any) => (clean(e.path).endsWith('/work/run.log') ? (log.reads++, { value: log.text }) : next(e)))
+  on('fs.stat', (_$: any, e: any, next: any) => (clean(e.path).endsWith('/work/run.log') ? { value: { kind: 'file', size: log.text.length, mtimeMs: log.mtimeMs } } : next(e)))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const pane = await $.ui.mount({ plugin: 'ClauDiscobombulating', surface: 'terminal', component: 'Pane', requestId: 'ClauDiscobombulating', props: PANE_PROPS })
   const text = async () => JSON.stringify(await pane.drawn())

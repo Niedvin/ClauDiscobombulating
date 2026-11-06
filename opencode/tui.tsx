@@ -694,7 +694,7 @@ function setup(context: Ctx) {
             <Show when={hasUpdate()}>
               <Click label={`✦ ${tr().updateAvail} v${mem.latest}`} fg={YELLOW} onClick={() => void selfUpdate()} />
             </Show>
-            {/* lit gear = purple cell + half-block caps, as on the Claude pane — 2026-11-05 */}
+            {/* lit gear = purple cell + half-block caps; 2 cells so a 2-cell glyph stays inside the hitbox — 2026-11-06 */}
             <box
               position="absolute"
               top={0}
@@ -705,7 +705,7 @@ function setup(context: Ctx) {
             >
               <text>
                 <span style={{ fg: GEAR_LIT }}>{hoverGear() ? "▐" : " "}</span>
-                <span style={{ fg: "#9a9aab", bg: hoverGear() ? GEAR_LIT : undefined }}>⚙</span>
+                <span style={{ fg: "#9a9aab", bg: hoverGear() ? GEAR_LIT : undefined }}>{"⚙ "}</span>
                 <span style={{ fg: GEAR_LIT }}>{hoverGear() ? "▌" : " "}</span>
               </text>
             </box>
