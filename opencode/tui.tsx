@@ -4,30 +4,30 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js"
 import { spawn } from "node:child_process"
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 type Ctx = Plugin.Context
-type Window = { percent: number; resetsAt?: string }
+type Window = { percent: number; limited?: boolean; resetsAt?: string | number }
 type Kind = "rolling" | "weekly" | "monthly"
 type Usage = Partial<Record<Kind, Window>>
+type AgQuota = { label: string; percentUsed: number; resetsAt?: number }
 
 const ID = "claudiscobombulating"
 const NAME = "ClauDiscobombulating"
 const RESUME_TEXT = "continue"
-// undocumented, found by probing; takes the Go API key as Bearer — 2026-10-11
-const USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
 const USAGE_EVERY_MS = 60000
 const KINDS: Kind[] = ["rolling", "weekly", "monthly"]
-// one bar per variant the model has, each drawn as its level is on the Claude pane — 2026-11-05
-const EFFORT_BARS = "▁▃▄▆█"
+// antigravity's proxy serves only these three; the anthropic package defaults to five — 2026-11-09
+const AG_EFFORTS = ["low", "medium", "high"]
+// bar heights are picked by variant position, so a 3-variant model still grows evenly — 2026-11-09
+const EFFORT_BLOCKS = " ▁▂▃▄▅▆▇█"
+const INVERSE_FG = "#101014"
 const TIMER_ROWS = 7
 // big digits: 17 cols of time + ≤16-col pill; 36 not 38 ∵ opencode sidebar content is 37 wide — 2026-11-03
 const BIG_TIMER_COLS = 36
 const DIGIT_HOVER = "#9ad0f0"
 const GEAR_LIT = "#b678e0"
-const ROW_LIT = "#2a2a34"
 const DANCE_FRAME_MS = 80
 const STAGE_MIN_ROWS = 15
 const RED = "#ef5b5b"
@@ -133,6 +133,13 @@ const EN: typeof UK = {
 const EFFORT_HUES = [BLUE, GREEN, GREEN, GREEN, RED]
 const effortStep = (v: string | undefined) => (!v ? -1 : /^(none|minimal|low)$/.test(v) ? 0 : v === "medium" ? 1 : v === "xhigh" ? 3 : v === "max" ? 4 : 2)
 const effortHue = (v: string | undefined) => (!v ? undefined : /^(none|minimal|low)$/.test(v) ? BLUE : /^(xhigh|max)$/.test(v) ? RED : GREEN)
+// bar height from its place in the list: 1/8 at the bottom, 8/8 at the top — 2026-11-09
+const effortBar = (i: number, n: number) => EFFORT_BLOCKS[Math.max(1, Math.round(((i + 1) / n) * 8))]
+const AG_VARIANT = /-(?:low|medium|high|xhigh|max)$/i
+const agLabel = (name: string) => {
+  const s = name.replace(/\s*\([^)]*\)\s*$/, "").replace(/^gemini[-\s]+/i, "").replace(AG_VARIANT, "")
+  return s.length > 9 ? `${s.slice(0, 8)}…` : s
+}
 const two = (n: number) => String(n).padStart(2, "0")
 const isRootDir = (p: string) => /^[A-Za-z]:[\\/]*$/.test(p) || /^[\\/]+$/.test(p)
 
@@ -257,17 +264,6 @@ function nextAt(h: number, m: number, now: number) {
   return d.getTime()
 }
 
-function goKey() {
-  const base = process.env.XDG_DATA_HOME || path.join(homedir(), ".local", "share")
-  try {
-    const auth = JSON.parse(readFileSync(path.join(base, "opencode", "auth.json"), "utf8")) as Record<string, { key?: unknown }>
-    const key = auth["opencode-go"]?.key
-    return typeof key === "string" ? key : undefined
-  } catch {
-    return undefined
-  }
-}
-
 function setup(context: Ctx) {
   const { theme, ui, data, client, keymap } = context
   const here = path.dirname(fileURLToPath(import.meta.url))
@@ -275,6 +271,7 @@ function setup(context: Ctx) {
   const [tr, setTr] = createSignal(EN)
   const [now, setNow] = createSignal(Date.now())
   const [usage, setUsage] = createSignal<Usage>()
+  const [agQuota, setAgQuota] = createSignal<AgQuota[]>([])
   const [mem, setMem] = context.storage.memory("state", {
     initial: { timer: { at: 0, text: "", sessionID: "" }, draft: { h: 0, m: 0, isSet: false }, latest: "", dir: "" },
   })
@@ -295,15 +292,58 @@ function setup(context: Ctx) {
 
   void detectUk().then(isUk => setTr(isUk ? UK : EN))
 
-  async function pollUsage() {
-    const key = goKey()
-    if (!key) return setUsage(undefined)
+  function usageLocation() {
     try {
-      // Cloudflare answers 403 to some default agents — 2026-10-11
-      const r = await fetch(USAGE_URL, { headers: { Authorization: `Bearer ${key}`, "User-Agent": "opencode" } })
+      return context.location ?? data.location.default()
+    } catch {
+      return { directory: process.cwd() } as unknown as ReturnType<typeof data.location.default>
+    }
+  }
+
+  // the client resolves the console OAuth token and org id; auth.json no longer holds either — 2026-11-09
+  async function pollUsage() {
+    const location = usageLocation()
+    const go = (async () => {
+      try {
+        const r = await client.experimental.usage.limits({ location })
+        setUsage(r.data?.go)
+      } catch {}
+    })()
+    await Promise.all([go, pollAntigravity(location)])
+  }
+
+  // antigravity's own proxy keeps the quota it will enforce; /health is unauthenticated on authed proxies — 2026-11-09
+  async function pollAntigravity(location: ReturnType<typeof data.location.default>) {
+    const provider = (data.location.provider.list(location) ?? []).find(p => p.id === "antigravity")
+    const base = provider?.settings?.baseURL
+    if (typeof base !== "string") return setAgQuota([])
+    let origin = ""
+    try {
+      origin = new URL(base).origin
+    } catch {
+      return setAgQuota([])
+    }
+    try {
+      const r = await fetch(`${origin}/health`, { headers: { "User-Agent": "opencode" } })
       if (!r.ok) return
-      const v = (await r.json()) as { usage?: Usage }
-      if (v.usage) setUsage(v.usage)
+      const v = (await r.json()) as { accounts?: { models?: Record<string, { remainingFraction?: number; resetTime?: string }> }[] }
+      const models = (data.location.model.list(location) ?? []).filter(m => m.providerID === "antigravity")
+      const seen = new Set<string>()
+      const rows: AgQuota[] = []
+      for (const m of models) {
+        const quota = v.accounts?.find(a => a.models?.[m.id])?.models?.[m.id]
+        if (!quota || typeof quota.remainingFraction !== "number") continue
+        const key = `${quota.remainingFraction}|${quota.resetTime ?? ""}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const reset = quota.resetTime ? Date.parse(quota.resetTime) : undefined
+        rows.push({
+          label: agLabel(m.name ?? m.id),
+          percentUsed: Math.max(0, Math.min(100, (1 - quota.remainingFraction) * 100)),
+          resetsAt: reset !== undefined && !Number.isNaN(reset) ? reset : undefined,
+        })
+      }
+      setAgQuota(rows)
     } catch {}
   }
 
@@ -315,18 +355,24 @@ function setup(context: Ctx) {
     return KINDS.flatMap(kind => {
       const w = u[kind]
       if (!w || typeof w.percent !== "number") return []
-      return [{ kind, percentUsed: w.resetsAt && Date.parse(w.resetsAt) <= t ? 0 : w.percent, resetsAt: w.resetsAt }]
+      const reset = typeof w.resetsAt === "number" ? w.resetsAt : w.resetsAt ? Date.parse(w.resetsAt) : undefined
+      return [{ kind, percentUsed: reset !== undefined && reset <= t ? 0 : w.percent, resetsAt: reset }]
     })
   })
 
-  function resetIn(iso: string | undefined, t: number) {
-    if (!iso) return ""
-    const at = Date.parse(iso)
-    if (Number.isNaN(at)) return ""
-    const m = Math.max(0, Math.round((at - t) / 60000))
+  const antigravity = createMemo(() => {
+    const t = now()
+    return agQuota().map(r => ({ ...r, percentUsed: r.resetsAt !== undefined && r.resetsAt <= t ? 0 : r.percentUsed }))
+  })
+
+  function resetIn(at: string | number | undefined, t: number, short = false) {
+    if (at === undefined) return ""
+    const ms = typeof at === "number" ? at : Date.parse(at)
+    if (Number.isNaN(ms)) return ""
+    const m = Math.max(0, Math.round((ms - t) / 60000))
     const s = tr()
-    if (m >= 1440) return `${Math.floor(m / 1440)}${s.day} ${Math.floor((m % 1440) / 60)}${s.hour}`
-    return m >= 60 ? `${Math.floor(m / 60)}${s.hour} ${m % 60}${s.min}` : `${m}${s.min}`
+    if (m >= 1440) return `${Math.floor(m / 1440)}${s.day}${short ? "" : ` ${Math.floor((m % 1440) / 60)}${s.hour}`}`
+    return m >= 60 ? `${Math.floor(m / 60)}${s.hour}${short ? "" : ` ${m % 60}${s.min}`}` : `${m}${s.min}`
   }
   const shortName = (kind: Kind) => ({ rolling: `5${tr().hour}`, weekly: `7${tr().day}`, monthly: tr().month })[kind]
 
@@ -334,7 +380,8 @@ function setup(context: Ctx) {
     const d = mem.draft
     if (d.isSet) return d
     const reset = usage()?.rolling?.resetsAt
-    const base = reset ? Date.parse(reset) + 60000 : now() + 3600000
+    const at = reset === undefined ? undefined : typeof reset === "number" ? reset : Date.parse(reset)
+    const base = at !== undefined && !Number.isNaN(at) ? at + 60000 : now() + 3600000
     const t = new Date(Math.ceil(base / 300000) * 300000)
     return { h: t.getHours(), m: t.getMinutes(), isSet: false }
   }
@@ -403,8 +450,10 @@ function setup(context: Ctx) {
   }
 
   function cycleVariant(dir: number) {
-    const options: (string | undefined)[] = [undefined, ...ui.model.variant.list()]
-    const i = options.indexOf(ui.model.current()?.variant)
+    const cur = ui.model.current()
+    const list = cur?.providerID === "antigravity" ? AG_EFFORTS : ui.model.variant.list()
+    const options: (string | undefined)[] = [undefined, ...list]
+    const i = options.indexOf(cur?.variant)
     ui.model.variant.set(options[wrap(i + dir, options.length)])
   }
 
@@ -595,17 +644,43 @@ function setup(context: Ctx) {
     step(e.scroll.direction === "up" ? 1 : -1)
   }
 
-  const Click = (p: { label: string; fg?: unknown; bold?: boolean; onClick: () => void; onScroll?: (dir: number) => void }) => (
-    <text fg={(p.fg ?? theme.text.base) as never} onMouseUp={() => p.onClick()} onMouseScroll={e => p.onScroll && wheel(e, p.onScroll)}>
-      {p.bold ? <b>{p.label}</b> : p.label}
-    </text>
-  )
+  const Click = (p: { label: string; fg?: unknown; bold?: boolean; onClick: () => void; onScroll?: (dir: number) => void }) => {
+    const [hot, setHot] = createSignal(false)
+    const color = (p.fg ?? theme.text.base) as never
+    return (
+      <text
+        fg={hot() ? INVERSE_FG : color}
+        bg={hot() ? color : undefined}
+        onMouseUp={() => p.onClick()}
+        onMouseOver={() => setHot(true)}
+        onMouseOut={() => setHot(false)}
+        onMouseScroll={e => p.onScroll && wheel(e, p.onScroll)}
+      >
+        {p.bold ? <b>{p.label}</b> : p.label}
+      </text>
+    )
+  }
 
-  const Card = (p: { label: string; fg: string; width?: number; basis?: number; onClick: () => void }) => (
-    <box border borderStyle="rounded" borderColor={p.fg} width={p.width} flexGrow={p.width ? 0 : 1} flexBasis={p.width ?? p.basis ?? 0} alignItems="center" onMouseUp={() => p.onClick()}>
-      <text fg={p.fg}>{p.label}</text>
-    </box>
-  )
+  const Card = (p: { label: string; fg: string; width?: number; basis?: number; onClick: () => void }) => {
+    const [hot, setHot] = createSignal(false)
+    return (
+      <box
+        border
+        borderStyle="rounded"
+        borderColor={p.fg}
+        width={p.width}
+        flexGrow={p.width ? 0 : 1}
+        flexBasis={p.width ?? p.basis ?? 0}
+        alignItems="center"
+        backgroundColor={hot() ? p.fg : undefined}
+        onMouseUp={() => p.onClick()}
+        onMouseOver={() => setHot(true)}
+        onMouseOut={() => setHot(false)}
+      >
+        <text fg={hot() ? INVERSE_FG : p.fg}>{p.label}</text>
+      </box>
+    )
+  }
 
   function Section(p: { sessionID?: string }) {
     const sid = () => p.sessionID ?? ""
@@ -615,10 +690,19 @@ function setup(context: Ctx) {
       const beat = setInterval(() => (seenAt = Date.now()), 1000)
       onCleanup(() => clearInterval(beat))
     })
-    const variants = createMemo(() => ui.model.variant.list())
+    const variants = createMemo(() => {
+      const list = ui.model.variant.list()
+      return ui.model.current()?.providerID === "antigravity" ? list.filter(v => AG_EFFORTS.includes(v)) : list
+    })
     const variant = createMemo(() => ui.model.current()?.variant)
     const hue = createMemo(() => effortHue(variant()) ?? theme.border.base)
     const chord = createMemo(() => keymap.shortcuts("variant.cycle")[0])
+    // a variant picked for another model is not valid here; keep the nearest of the three — 2026-11-09
+    createEffect(() => {
+      const cur = ui.model.current()
+      if (cur?.providerID !== "antigravity" || !cur.variant || AG_EFFORTS.includes(cur.variant)) return
+      ui.model.variant.set(/^(none|minimal)$/.test(cur.variant) ? "low" : "high")
+    })
     const draft = createMemo(() => shownDraft())
     const armed = () => mem.timer.at > 0
     const fireAt = () => (armed() ? mem.timer.at : nextAt(draft().h, draft().m, now()))
@@ -629,6 +713,11 @@ function setup(context: Ctx) {
     const [hoverM, setHoverM] = createSignal(false)
     const [hoverPill, setHoverPill] = createSignal(false)
     const [hoverGear, setHoverGear] = createSignal(false)
+    const [hoverModel, setHoverModel] = createSignal(false)
+    const [hoverField, setHoverField] = createSignal(false)
+    const [hoverSend, setHoverSend] = createSignal(false)
+    const [hoverPrev, setHoverPrev] = createSignal(false)
+    const [hoverNext, setHoverNext] = createSignal(false)
     // the scene keeps the height the panel had when the name was pressed — 2026-11-05
     let stageRows = STAGE_MIN_ROWS
     createEffect(() => {
@@ -682,7 +771,7 @@ function setup(context: Ctx) {
       <box ref={r => (rootEl = r)} onSizeChange={measure} minHeight={fill() || undefined} gap={1}>
         <Show when={!danceAt()} fallback={<Stage width={timerW()} height={Math.max(STAGE_MIN_ROWS, Math.min(60, stageRows))} />}>
           <box border borderStyle="rounded" borderColor={hues[0]} alignItems="center">
-            <box flexDirection="row">
+            <box flexDirection="row" paddingRight={4}>
               <text onMouseUp={startDance}>
                 <b>
                   <For each={[...NAME]}>{(ch, k) => <span style={{ fg: hues[k()] }}>{ch}</span>}</For>
@@ -694,7 +783,7 @@ function setup(context: Ctx) {
             <Show when={hasUpdate()}>
               <Click label={`✦ ${tr().updateAvail} v${mem.latest}`} fg={YELLOW} onClick={() => void selfUpdate()} />
             </Show>
-            {/* lit gear = purple cell + half-block caps; 2 cells so a 2-cell glyph stays inside the hitbox — 2026-11-06 */}
+            {/* gear ink overflows right of its engine cell: 2-cell bg + right half cap centres it — 2026-11-07 */}
             <box
               position="absolute"
               top={0}
@@ -704,7 +793,7 @@ function setup(context: Ctx) {
               onMouseOut={() => setHoverGear(false)}
             >
               <text>
-                <span style={{ fg: GEAR_LIT }}>{hoverGear() ? "▐" : " "}</span>
+                <span>{" "}</span>
                 <span style={{ fg: "#9a9aab", bg: hoverGear() ? GEAR_LIT : undefined }}>{"⚙ "}</span>
                 <span style={{ fg: GEAR_LIT }}>{hoverGear() ? "▌" : " "}</span>
               </text>
@@ -811,17 +900,25 @@ function setup(context: Ctx) {
                   <box
                     border
                     borderStyle="rounded"
-                    borderColor={theme.text.muted}
-                    backgroundColor="#1c1c24"
+                    borderColor={hoverField() ? GREEN : theme.text.muted}
+                    backgroundColor={hoverField() ? "#22222c" : "#1c1c24"}
                     width={fieldW()}
                     paddingX={1}
                     flexDirection="row"
                     justifyContent="space-between"
                     onMouseUp={() => void editText()}
+                    onMouseOver={() => setHoverField(true)}
+                    onMouseOut={() => setHoverField(false)}
                   >
                     <text fg={theme.text.base}>{`✎ ${text()}`}</text>
-                    <box paddingLeft={2} onMouseUp={e => (e.stopPropagation(), arm(sid()))}>
-                      <text fg={GREEN}>{"⏎"}</text>
+                    <box
+                      paddingLeft={2}
+                      backgroundColor={hoverSend() ? GREEN : undefined}
+                      onMouseUp={e => (e.stopPropagation(), arm(sid()))}
+                      onMouseOver={() => setHoverSend(true)}
+                      onMouseOut={() => setHoverSend(false)}
+                    >
+                      <text fg={hoverSend() ? INVERSE_FG : GREEN} bg={hoverSend() ? GREEN : undefined}>{"⏎"}</text>
                     </box>
                   </box>
                 }
@@ -856,15 +953,16 @@ function setup(context: Ctx) {
                 borderColor={CYAN}
                 title={` ${tr().model} `}
                 titleColor={theme.text.muted}
-                paddingX={1}
-                flexDirection="row"
-                justifyContent="space-between"
                 onMouseUp={() => keymap.dispatch("model.list")}
+                onMouseOver={() => setHoverModel(true)}
+                onMouseOut={() => setHoverModel(false)}
               >
-                <text fg={theme.text.base}>
-                  <b>{modelName()}</b>
-                </text>
-                <text fg={CYAN}>▾</text>
+                <box flexDirection="row" justifyContent="space-between" paddingX={1} flexGrow={1} backgroundColor={hoverModel() ? CYAN : undefined}>
+                  <text fg={hoverModel() ? INVERSE_FG : theme.text.base}>
+                    <b>{modelName()}</b>
+                  </text>
+                  <text fg={hoverModel() ? INVERSE_FG : CYAN}>▾</text>
+                </box>
               </box>
               <Show when={variants().length > 0}>
                 <box
@@ -881,23 +979,39 @@ function setup(context: Ctx) {
                   onMouseScroll={e => wheel(e, cycleVariant)}
                 >
                   <box flexDirection="row">
-                    <box paddingX={1} onMouseUp={() => cycleVariant(-1)}>
-                      <text fg={theme.text.muted}>◀</text>
+                    <box
+                      paddingX={1}
+                      backgroundColor={hoverPrev() ? theme.text.muted : undefined}
+                      onMouseUp={() => cycleVariant(-1)}
+                      onMouseOver={() => setHoverPrev(true)}
+                      onMouseOut={() => setHoverPrev(false)}
+                    >
+                      <text fg={hoverPrev() ? INVERSE_FG : theme.text.muted}>◀</text>
                     </box>
                     <box paddingX={1}>
                       <text fg={hue()}>
                         <b>{variant() ?? "default"}</b>
                       </text>
                     </box>
-                    <box paddingX={1} onMouseUp={() => cycleVariant(1)}>
-                      <text fg={theme.text.muted}>▶</text>
+                    <box
+                      paddingX={1}
+                      backgroundColor={hoverNext() ? theme.text.muted : undefined}
+                      onMouseUp={() => cycleVariant(1)}
+                      onMouseOver={() => setHoverNext(true)}
+                      onMouseOut={() => setHoverNext(false)}
+                    >
+                      <text fg={hoverNext() ? INVERSE_FG : theme.text.muted}>▶</text>
                     </box>
                   </box>
                   <text>
                     <For each={variants()}>
                       {(v, k) => {
                         const step = effortStep(v)
-                        return <span style={{ fg: k() <= variants().indexOf(variant() ?? "") ? EFFORT_HUES[step] : theme.border.base }}>{EFFORT_BARS[step]}</span>
+                        return (
+                          <span style={{ fg: k() <= variants().indexOf(variant() ?? "") ? EFFORT_HUES[step] : theme.border.base }}>
+                            {effortBar(k(), variants().length)}
+                          </span>
+                        )
                       }}
                     </For>
                   </text>
@@ -942,13 +1056,13 @@ function setup(context: Ctx) {
           flexDirection="row"
           justifyContent="space-between"
           paddingX={1}
-          backgroundColor={lit() ? ROW_LIT : undefined}
+          backgroundColor={lit() ? (value() ? GREEN : theme.text.muted) : undefined}
           onMouseUp={flip}
           onMouseOver={() => setLit(true)}
           onMouseOut={() => setLit(false)}
         >
-          <text fg={value() ? GREEN : theme.text.muted}>{label()}</text>
-          <text fg={value() ? GREEN : theme.text.muted}>{value() ? `● ${tr().on}` : `○ ${tr().off}`}</text>
+          <text fg={lit() ? INVERSE_FG : value() ? GREEN : theme.text.muted}>{label()}</text>
+          <text fg={lit() ? INVERSE_FG : value() ? GREEN : theme.text.muted}>{value() ? `● ${tr().on}` : `○ ${tr().off}`}</text>
         </box>
       )
     }
@@ -959,12 +1073,12 @@ function setup(context: Ctx) {
         {row(() => tr().setSilentUpdate, () => prefs.silentUpdate, () => void setPrefs(d => void (d.silentUpdate = !d.silentUpdate)))}
         <box
           paddingX={1}
-          backgroundColor={backLit() ? ROW_LIT : undefined}
+          backgroundColor={backLit() ? theme.text.muted : undefined}
           onMouseUp={() => setShowSettings(false)}
           onMouseOver={() => setBackLit(true)}
           onMouseOut={() => setBackLit(false)}
         >
-          <text fg={theme.text.muted}>{tr().back}</text>
+          <text fg={backLit() ? INVERSE_FG : theme.text.muted}>{tr().back}</text>
         </box>
       </box>
     )
@@ -975,6 +1089,7 @@ function setup(context: Ctx) {
     const [open, setOpen] = createSignal(false)
     const [dir, setDir] = createSignal("")
     const [top, setTop] = createSignal(0)
+    const [hot, setHot] = createSignal("")
     const where = () => (p.sessionID ? data.session.get(p.sessionID)?.location.directory ?? "" : homeDir())
     const entries = createMemo(() => {
       const d = dir()
@@ -1013,32 +1128,68 @@ function setup(context: Ctx) {
     }
     return (
       <box>
-        <box flexDirection="row" justifyContent="space-between" paddingX={1} onMouseUp={toggle}>
-          <text fg={FOLDER}>{`📁 ${tr().folder}  ${name()}`}</text>
-          <text fg={theme.text.muted}>{open() ? "▴" : "▾"}</text>
+        <box
+          flexDirection="row"
+          justifyContent="space-between"
+          paddingX={1}
+          backgroundColor={hot() === "head" ? FOLDER : undefined}
+          onMouseUp={toggle}
+          onMouseOver={() => setHot("head")}
+          onMouseOut={() => setHot("")}
+        >
+          <text fg={hot() === "head" ? INVERSE_FG : FOLDER}>{`📁 ${tr().folder}  ${name()}`}</text>
+          <text fg={hot() === "head" ? INVERSE_FG : theme.text.muted}>{open() ? "▴" : "▾"}</text>
         </box>
         <Show when={open()}>
           <box paddingX={1} onMouseScroll={e => setTop(t => Math.max(0, Math.min(Math.max(0, entries().length - TREE_ROWS), t + (e.scroll?.direction === "up" ? -1 : 1))))}>
             {/* row halves are boxes: a press anywhere on one counts, not on its text only — 2026-10-30 */}
             <box flexDirection="row">
-              <box flexGrow={1} onMouseUp={() => !isRootDir(dir()) && enter(path.dirname(dir()))}>
-                <text fg={PURPLE}>{isRootDir(dir()) ? " " : "‹ .."}</text>
+              <box
+                flexGrow={1}
+                backgroundColor={hot() === "up" ? PURPLE : undefined}
+                onMouseUp={() => !isRootDir(dir()) && enter(path.dirname(dir()))}
+                onMouseOver={() => setHot("up")}
+                onMouseOut={() => setHot("")}
+              >
+                <text fg={hot() === "up" ? INVERSE_FG : PURPLE}>{isRootDir(dir()) ? " " : "‹ .."}</text>
               </box>
-              <box paddingLeft={2} onMouseUp={() => pick(dir())}>
-                <text fg={GREEN}>{`✓ ${tr().here}`}</text>
+              <box
+                paddingLeft={2}
+                backgroundColor={hot() === "pick" ? GREEN : undefined}
+                onMouseUp={() => pick(dir())}
+                onMouseOver={() => setHot("pick")}
+                onMouseOut={() => setHot("")}
+              >
+                <text fg={hot() === "pick" ? INVERSE_FG : GREEN}>{`✓ ${tr().here}`}</text>
               </box>
             </box>
             <For each={shown()}>
-              {en => (
-                <box flexDirection="row">
-                  <box flexGrow={1} onMouseUp={() => enter(en.path)}>
-                    <text fg="#9ad0f0">{`▸ ${en.name.length > 28 ? `${en.name.slice(0, 27)}…` : en.name}`}</text>
+              {en => {
+                const enterKey = `enter:${en.path}`
+                const pickKey = `pick:${en.path}`
+                return (
+                  <box flexDirection="row">
+                    <box
+                      flexGrow={1}
+                      backgroundColor={hot() === enterKey ? "#9ad0f0" : undefined}
+                      onMouseUp={() => enter(en.path)}
+                      onMouseOver={() => setHot(enterKey)}
+                      onMouseOut={() => setHot("")}
+                    >
+                      <text fg={hot() === enterKey ? INVERSE_FG : "#9ad0f0"}>{`▸ ${en.name.length > 28 ? `${en.name.slice(0, 27)}…` : en.name}`}</text>
+                    </box>
+                    <box
+                      paddingLeft={2}
+                      backgroundColor={hot() === pickKey ? GREEN : undefined}
+                      onMouseUp={() => pick(en.path)}
+                      onMouseOver={() => setHot(pickKey)}
+                      onMouseOut={() => setHot("")}
+                    >
+                      <text fg={hot() === pickKey ? INVERSE_FG : GREEN}>{"→"}</text>
+                    </box>
                   </box>
-                  <box paddingLeft={2} onMouseUp={() => pick(en.path)}>
-                    <text fg={GREEN}>{"→"}</text>
-                  </box>
-                </box>
-              )}
+                )
+              }}
             </For>
           </box>
         </Show>
@@ -1152,25 +1303,33 @@ function setup(context: Ctx) {
   }
 
   function Limits() {
+    // one box, the selected model's provider: the sidebar footer is at the very bottom — 2026-11-09
+    const isAg = createMemo(() => ui.model.current()?.providerID === "antigravity")
+    type Row = { label: string; width: number; percent: number; resetsAt?: number; short: boolean }
+    const rows = createMemo<Row[]>(() =>
+      isAg()
+        ? antigravity().map(l => ({ label: l.label, width: 9, percent: l.percentUsed, resetsAt: l.resetsAt, short: true }))
+        : limits().map(l => ({ label: shortName(l.kind), width: 3, percent: l.percentUsed, resetsAt: l.resetsAt, short: false })),
+    )
+    const title = () => (isAg() ? "Antigravity" : "OpenCode Go")
+    const parts = (r: Row) => {
+      const n = Math.max(0, Math.min(10, Math.round(Math.min(r.percent, 100) / 10)))
+      return (
+        <>
+          <span style={{ fg: theme.text.muted }}>{`${fit(r.label, r.width)} `}</span>
+          <span style={{ fg: tone(r.percent) }}>{"━".repeat(n)}</span>
+          <span style={{ fg: theme.border.base }}>{"─".repeat(10 - n)}</span>
+          <span style={{ fg: tone(r.percent) }}>{` ${String(Math.round(r.percent)).padStart(3)}%`}</span>
+          <Show when={r.resetsAt}>
+            <span style={{ fg: theme.text.muted }}>{` ↻ ${resetIn(r.resetsAt, now(), r.short)}`}</span>
+          </Show>
+        </>
+      )
+    }
     return (
-      <Show when={limits().length > 0}>
-        <box border borderStyle="rounded" borderColor={theme.border.base} title=" OpenCode Go " titleColor={theme.text.muted} paddingX={1}>
-          <For each={limits()}>
-            {l => {
-              const n = () => Math.round(Math.min(l.percentUsed, 100) / 10)
-              return (
-                <text>
-                  <span style={{ fg: theme.text.muted }}>{`${shortName(l.kind).padEnd(3)} `}</span>
-                  <span style={{ fg: tone(l.percentUsed) }}>{"━".repeat(n())}</span>
-                  <span style={{ fg: theme.border.base }}>{"─".repeat(10 - n())}</span>
-                  <span style={{ fg: tone(l.percentUsed) }}>{` ${String(Math.round(l.percentUsed)).padStart(3)}%`}</span>
-                  <Show when={l.resetsAt}>
-                    <span style={{ fg: theme.text.muted }}>{` ↻ ${resetIn(l.resetsAt, now())}`}</span>
-                  </Show>
-                </text>
-              )
-            }}
-          </For>
+      <Show when={rows().length > 0}>
+        <box border borderStyle="rounded" borderColor={theme.border.base} title={` ${title()} `} titleColor={theme.text.muted} paddingX={1}>
+          <For each={rows()}>{r => <text>{parts(r)}</text>}</For>
         </box>
       </Show>
     )

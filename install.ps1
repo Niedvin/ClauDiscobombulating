@@ -107,8 +107,9 @@ function Install-Pi {
 }
 
 $markets = (& claude plugin marketplace list --json 2>$null | ConvertFrom-Json)
-$market = $markets | Where-Object { $_.name -eq $Market } | Select-Object -First 1
-$hasMarket = [bool]$market
+# $market would clobber $Market: PowerShell names are case-insensitive — 2026-11-07
+$installedMarket = $markets | Where-Object { $_.name -eq $Market } | Select-Object -First 1
+$hasMarket = [bool]$installedMarket
 $plugins = (& claude plugin list --json 2>$null | ConvertFrom-Json)
 $hasPlugin = [bool]($plugins | Where-Object { $_.id -eq $Plugin })
 # the mod was called prompt-bar before the rename — 2026-10-06
@@ -133,7 +134,7 @@ foreach ($id in $legacyPlugins) { Invoke-Claude @('plugin', 'uninstall', $id, '-
 foreach ($name in $legacyMarkets) { Invoke-Claude @('plugin', 'marketplace', 'remove', $name) }
 # the installed copy goes only after the new source is fetched: no network must not leave you with no mod — 2026-11-05
 $want = if ($Repo) { $Repo } else { $Root }
-$sameSource = $hasMarket -and $(if ($Repo) { $market.source -eq 'github' -and $market.repo -eq $Repo } else { $market.source -eq 'directory' -and $market.path -and ([IO.Path]::GetFullPath($market.path).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')) })
+$sameSource = $hasMarket -and $(if ($Repo) { $installedMarket.source -eq 'github' -and $installedMarket.repo -eq $Repo } else { $installedMarket.source -eq 'directory' -and $installedMarket.path -and ([IO.Path]::GetFullPath($installedMarket.path).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')) })
 if ($sameSource) {
   try { Invoke-Claude @('plugin', 'marketplace', 'update', $Market) } catch { throw "Could not update the marketplace; the installed copy is kept. $_" }
 } else {
@@ -145,7 +146,7 @@ if ($sameSource) {
   try {
     Invoke-Claude @('plugin', 'marketplace', 'add', $want)
   } catch {
-    $old = if ($market.source -eq 'github') { $market.repo } else { $market.path }
+    $old = if ($installedMarket.source -eq 'github') { $installedMarket.repo } else { $installedMarket.path }
     if ($old) {
       & claude plugin marketplace add $old 2>$null | Out-Null
       if ($LASTEXITCODE -eq 0 -and $hasPlugin) { & claude plugin install $Plugin --scope user 2>$null | Out-Null }

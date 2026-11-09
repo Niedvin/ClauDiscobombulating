@@ -2301,14 +2301,11 @@ let paneRows = { timer: [-1, -1], model: [-1, -1], effort: [-1, -1], tree: [-1, 
             <Text color="#f0b429">{fit(tr.updateHint(latestV), Math.max(1, width - 2))}</Text>
           </Button>
         ) : null}
-        {/* lit gear = purple cell + half-block caps: 2 cells so a 2-cell glyph stays inside; half-cell margins, centred — 2026-11-06 */}
+        {/* gear ink overflows right of its engine cell: 2-cell bg + right half cap centres it — 2026-11-07 */}
         <Box position="absolute" top={0} right={0} width={4} paddingLeft={1}>
           <Button key="gear" plain onPress={() => update($, settings, v => !v)} hover={{ scope: 'gear', inverse: false, backgroundColor: GEAR_LIT }}>
             <Text color="#9a9aab">{'⚙ '}</Text>
           </Button>
-          <Box position="absolute" top={0} left={0} display="none" hover={{ scope: 'gear', display: 'flex' }}>
-            <Text color={GEAR_LIT}>▐</Text>
-          </Box>
           <Box position="absolute" top={0} left={3} display="none" hover={{ scope: 'gear', display: 'flex' }}>
             <Text color={GEAR_LIT}>▌</Text>
           </Box>
