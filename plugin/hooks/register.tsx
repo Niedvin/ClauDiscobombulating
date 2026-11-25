@@ -539,8 +539,10 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
   const vars: Record<string, string> = {}
   // `S=dir; cmd > $S/log`: the value ends at the `;` too, or the log path is `dir;/log` — 2026-11-02
   for (const m of bare.matchAll(/(?:^|[\s;&(])(\w+)=([^\s;&|)]*)/g)) vars[m[1]!] = unq(m[2]!)
-  const mm = CLI_MODEL.exec(bare)
-  const em = CLI_EFFORT.exec(bare)
+  // flags before the CLI are not its own: `curl -m 5 … ; opencode run -m …` showed model `5` — 2026-11-25
+  const own = bare.slice(hit!.index)
+  const mm = CLI_MODEL.exec(own)
+  const em = CLI_EFFORT.exec(own)
   let [path, variant] = unq(mm?.[1] ?? mm?.[2] ?? mm?.[3] ?? '').replace(/^["']|["']$/g, '').split('#')
   const tail = MODEL_EFFORT.exec(path ?? '')
   if (tail) path = path!.slice(0, tail.index)
@@ -623,14 +625,15 @@ function jsonLine(s: string): { line: string; model: string } {
     const o = v as Record<string, unknown>
     muted ||= /^(?:user|system)$/.test(String(o.role ?? '')) || /result$/i.test(String(o.type ?? ''))
     if (typeof o.model === 'string') model ||= o.model
-    const kind = typeof o.type === 'string' ? o.type : ''
+    // agy stream-json names the kind `step_type` (`tool`, `agent_response`) — 2026-11-25
+    const kind = [o.type, o.step_type].find(x => typeof x === 'string') as string | undefined ?? ''
     // single-token deltas (`"."`) would replace the line; the next full message event carries the text — 2026-11-02
     if (/delta/i.test(kind)) return
     if (/tool|command|function/i.test(kind)) {
       const name = [o.tool_name, o.toolName, o.tool, o.name, o.command].find(x => typeof x === 'string') as string | undefined
       if (name) tool ||= name
     }
-    for (const key of ['text', 'content', 'delta', 'result', 'message']) {
+    for (const key of ['text', 'content', 'delta', 'result', 'message', 'response']) {
       const x = o[key]
       if (typeof x === 'string' && x.trim() && !text && !muted) text = x
     }
