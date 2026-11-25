@@ -507,6 +507,7 @@ const CLI_MODEL = /\s(?:-m|--model)[\s=]+(\S+)|\s-c\s+model=(\S+)|\b(?:ollama\s+
 const CLI_EFFORT = /\s--(?:effort|thinking|think|variant|reasoning-effort|reasoning)[\s=]+(\w+)|model_reasoning_effort=["']?(\w+)/
 // pi takes effort as a model suffix: `--model provider/id:high` — 2026-11-02
 const MODEL_EFFORT = /:(off|minimal|low|medium|high|xhigh|max)$/
+const ID_EFFORT = /-(low|medium|high|xhigh|max)$/
 // `powershell -c "…"`, `cmd /c "…"`, `bash -lc '…'`: the quoted text is the command, not a prompt — 2026-11-02
 const SHELL_RUN = /(?:\s-(?:c|lc|Command|EncodedCommand)|\s\/[ck])\s*$/i
 const OUT_FILE = /(?:\|\s*(?:tee|Tee-Object|Out-File)\s+(?:-(?:a|Append|FilePath)\s+)*|(?:^|[^\d&>])>>?\s*)([^\s;&|)<>]+)/
@@ -543,7 +544,7 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
   let [path, variant] = unq(mm?.[1] ?? mm?.[2] ?? mm?.[3] ?? '').replace(/^["']|["']$/g, '').split('#')
   const tail = MODEL_EFFORT.exec(path ?? '')
   if (tail) path = path!.slice(0, tail.index)
-  const effort = variant || tail?.[1] || unq(em?.[1] ?? em?.[2] ?? '')
+  let effort = variant || tail?.[1] || unq(em?.[1] ?? em?.[2] ?? '')
   // only the redirect after the CLI is its log: `git status > pre.txt && opencode … > run.log` — 2026-11-02
   let log = unq(OUT_FILE.exec(bare.slice(hit!.index))?.[1] ?? '')
   if (log) {
@@ -580,6 +581,12 @@ async function trackShell($: EngineInterface, id: string, command: string, detac
     }
     const stat = await $.fs.stat(log).catch(() => undefined)
     if (stat) tailSeen.set(id, `${born}|${log}|${stat.size}|${stat.mtimeMs}`)
+  }
+  // Antigravity ids carry the effort: `antigravity/gemini-4-hydrogen-high` — 2026-11-25
+  const named = ID_EFFORT.exec(model)
+  if (named) {
+    model = model.slice(0, named.index)
+    effort ||= named[1]!
   }
   await update($, agents, a => ({ ...a, [id]: { model, effort, line, cli, log, born, ...(detached ? { detached } : {}) } }))
   kickGrow($)
